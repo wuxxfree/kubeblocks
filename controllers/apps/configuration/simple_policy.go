@@ -24,7 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
-	"github.com/apecloud/kubeblocks/internal/configuration/core"
+	"github.com/apecloud/kubeblocks/pkg/configuration/core"
 )
 
 type simplePolicy struct {
@@ -38,25 +38,19 @@ func (s *simplePolicy) Upgrade(params reconfigureParams) (ReturnedStatus, error)
 	params.Ctx.Log.V(1).Info("simple policy begin....")
 
 	var funcs RollingUpgradeFuncs
-	var compLists []client.Object
-
 	switch params.WorkloadType() {
 	default:
 		return makeReturnedStatus(ESNotSupport), core.MakeError("not supported component workload type:[%s]", params.WorkloadType())
 	case appsv1alpha1.Consensus:
 		funcs = GetConsensusRollingUpgradeFuncs()
-		compLists = fromStatefulSetObjects(params.ComponentUnits)
 	case appsv1alpha1.Stateful:
 		funcs = GetStatefulSetRollingUpgradeFuncs()
-		compLists = fromStatefulSetObjects(params.ComponentUnits)
 	case appsv1alpha1.Replication:
 		funcs = GetReplicationRollingUpgradeFuncs()
-		compLists = fromStatefulSetObjects(params.ComponentUnits)
 	case appsv1alpha1.Stateless:
 		funcs = GetDeploymentRollingUpgradeFuncs()
-		compLists = fromDeploymentObjects(params.DeploymentUnits)
 	}
-	return restartAndCheckComponent(params, funcs, compLists)
+	return restartAndCheckComponent(params, funcs, fromWorkloadObjects(params))
 }
 
 func (s *simplePolicy) GetPolicyName() string {
@@ -81,12 +75,12 @@ func restartAndCheckComponent(param reconfigureParams, funcs RollingUpgradeFuncs
 		param.Ctx.Recorder.Eventf(obj,
 			corev1.EventTypeWarning, appsv1alpha1.ReasonReconfigureRestartFailed,
 			"failed to  restart component[%s] in cluster[%s], version: %s", client.ObjectKeyFromObject(obj), param.Cluster.Name, newVersion)
-		return makeReturnedStatus(ESAndRetryFailed), err
+		return makeReturnedStatus(ESFailedAndRetry), err
 	}
 
 	pods, err := funcs.GetPodsFunc(param)
 	if err != nil {
-		return makeReturnedStatus(ESAndRetryFailed), err
+		return makeReturnedStatus(ESFailedAndRetry), err
 	}
 	if len(pods) != 0 {
 		progress = CheckReconfigureUpdateProgress(pods, configKey, newVersion)

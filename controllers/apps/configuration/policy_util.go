@@ -30,12 +30,16 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	workloads "github.com/apecloud/kubeblocks/apis/workloads/v1alpha1"
 	"github.com/apecloud/kubeblocks/controllers/apps/components"
-	"github.com/apecloud/kubeblocks/internal/configuration/core"
-	cfgproto "github.com/apecloud/kubeblocks/internal/configuration/proto"
-	"github.com/apecloud/kubeblocks/internal/constant"
-	intctrlutil "github.com/apecloud/kubeblocks/internal/controllerutil"
-	viper "github.com/apecloud/kubeblocks/internal/viperx"
+	"github.com/apecloud/kubeblocks/pkg/common"
+	"github.com/apecloud/kubeblocks/pkg/configuration/core"
+	cfgproto "github.com/apecloud/kubeblocks/pkg/configuration/proto"
+	"github.com/apecloud/kubeblocks/pkg/constant"
+	"github.com/apecloud/kubeblocks/pkg/controller/rsm"
+	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
+	"github.com/apecloud/kubeblocks/pkg/generics"
+	viper "github.com/apecloud/kubeblocks/pkg/viperx"
 )
 
 func getDeploymentRollingPods(params reconfigureParams) ([]corev1.Pod, error) {
@@ -57,7 +61,7 @@ func getReplicationSetPods(params reconfigureParams) ([]corev1.Pod, error) {
 func GetComponentPods(params reconfigureParams) ([]corev1.Pod, error) {
 	componentPods := make([]corev1.Pod, 0)
 	for i := range params.ComponentUnits {
-		pods, err := components.GetPodListByStatefulSet(params.Ctx.Ctx, params.Client, &params.ComponentUnits[i])
+		pods, err := common.GetPodListByStatefulSet(params.Ctx.Ctx, params.Client, &params.ComponentUnits[i])
 		if err != nil {
 			return nil, err
 		}
@@ -87,8 +91,7 @@ func getStatefulSetPods(params reconfigureParams) ([]corev1.Pod, error) {
 		return nil, core.MakeError("statefulSet component require only one statefulset, actual %d components", len(params.ComponentUnits))
 	}
 
-	stsObj := &params.ComponentUnits[0]
-	pods, err := components.GetPodListByStatefulSet(params.Ctx.Ctx, params.Client, stsObj)
+	pods, err := GetComponentPods(params)
 	if err != nil {
 		return nil, err
 	}
@@ -110,19 +113,21 @@ func getConsensusPods(params reconfigureParams) ([]corev1.Pod, error) {
 		return nil, nil
 	}
 
-	stsObj := &params.ComponentUnits[0]
-	pods, err := components.GetPodListByStatefulSet(params.Ctx.Ctx, params.Client, stsObj)
+	pods, err := GetComponentPods(params)
+	// stsObj := &params.ComponentUnits[0]
+	// pods, err := components.GetPodListByStatefulSetWithSelector(params.Ctx.Ctx, params.Client, stsObj, client.MatchingLabels{
+	//	constant.KBAppComponentLabelKey: params.ClusterComponent.Name,
+	//	constant.AppInstanceLabelKey:    params.Cluster.Name,
+	// })
 	if err != nil {
 		return nil, err
 	}
 
 	// TODO: should resolve the dependency on consensus module
-	components.SortPods(pods, components.ComposeRolePriorityMap(params.Component.ConsensusSpec), constant.RoleLabelKey)
-	r := make([]corev1.Pod, 0, len(pods))
-	for i := len(pods); i > 0; i-- {
-		r = append(r, pods[i-1:i]...)
+	if params.Component.RSMSpec != nil {
+		rsm.SortPods(pods, rsm.ComposeRolePriorityMap(params.Component.RSMSpec.Roles), true)
 	}
-	return r, nil
+	return pods, nil
 }
 
 // TODO commonOnlineUpdateWithPod migrate to sql command pipeline
@@ -203,65 +208,42 @@ func getURLFromPod(pod *corev1.Pod, portPort int) (string, error) {
 	return net.JoinHostPort(ip.String(), strconv.Itoa(portPort)), nil
 }
 
-func restartStatelessComponent(cli client.Client, ctx intctrlutil.RequestCtx, configKey string, expectedVersion string, deployObjs []client.Object, recordEvent func(obj client.Object)) (client.Object, error) {
-	cfgAnnotationKey := core.GenerateUniqKeyWithConfig(constant.UpgradeRestartAnnotationKey, configKey)
-	deployRestart := func(deploy *appv1.Deployment, expectedVersion string) error {
-		patch := client.MergeFrom(deploy.DeepCopy())
-		if deploy.Spec.Template.Annotations == nil {
-			deploy.Spec.Template.Annotations = map[string]string{}
-		}
-		deploy.Spec.Template.Annotations[cfgAnnotationKey] = expectedVersion
-		if err := cli.Patch(ctx.Ctx, deploy, patch); err != nil {
-			return err
-		}
+func restartWorkloadComponent[T generics.Object, PT generics.PObject[T], L generics.ObjList[T], PL generics.PObjList[T, L]](cli client.Client, ctx context.Context, annotationKey, annotationValue string, obj PT, _ func(T, PT, L, PL)) error {
+	template := transformPodTemplate(obj)
+	if updatedVersion(template, annotationKey, annotationValue) {
 		return nil
 	}
 
-	for _, obj := range deployObjs {
-		deploy, ok := obj.(*appv1.Deployment)
-		if !ok {
-			continue
-		}
-		if updatedVersion(&deploy.Spec.Template, cfgAnnotationKey, expectedVersion) {
-			continue
-		}
-		if err := deployRestart(deploy, expectedVersion); err != nil {
-			return deploy, err
-		}
-		if recordEvent != nil {
-			recordEvent(deploy)
-		}
+	patch := client.MergeFrom(PT(obj.DeepCopy()))
+	if template.Annotations == nil {
+		template.Annotations = map[string]string{}
 	}
-	return nil, nil
+	template.Annotations[annotationKey] = annotationValue
+	if err := cli.Patch(ctx, obj, patch); err != nil {
+		return err
+	}
+	return nil
 }
 
-func restartStatefulComponent(cli client.Client, ctx intctrlutil.RequestCtx, configKey string, newVersion string, objs []client.Object, recordEvent func(obj client.Object)) (client.Object, error) {
+func restartComponent(cli client.Client, ctx intctrlutil.RequestCtx, configKey string, newVersion string, objs []client.Object, recordEvent func(obj client.Object)) (client.Object, error) {
+	var err error
 	cfgAnnotationKey := core.GenerateUniqKeyWithConfig(constant.UpgradeRestartAnnotationKey, configKey)
-	stsRestart := func(sts *appv1.StatefulSet, expectedVersion string) error {
-		patch := client.MergeFrom(sts.DeepCopy())
-		if sts.Spec.Template.Annotations == nil {
-			sts.Spec.Template.Annotations = map[string]string{}
-		}
-		sts.Spec.Template.Annotations[cfgAnnotationKey] = expectedVersion
-		if err := cli.Patch(ctx.Ctx, sts, patch); err != nil {
-			return err
-		}
-		return nil
-	}
-
 	for _, obj := range objs {
-		sts, ok := obj.(*appv1.StatefulSet)
-		if !ok {
-			continue
+		switch w := obj.(type) {
+		case *appv1.StatefulSet:
+			err = restartWorkloadComponent(cli, ctx.Ctx, cfgAnnotationKey, newVersion, w, generics.StatefulSetSignature)
+		case *appv1.Deployment:
+			err = restartWorkloadComponent(cli, ctx.Ctx, cfgAnnotationKey, newVersion, w, generics.DeploymentSignature)
+		case *workloads.ReplicatedStateMachine:
+			err = restartWorkloadComponent(cli, ctx.Ctx, cfgAnnotationKey, newVersion, w, generics.RSMSignature)
+		default:
+			// ignore other types workload
 		}
-		if updatedVersion(&sts.Spec.Template, cfgAnnotationKey, newVersion) {
-			continue
-		}
-		if err := stsRestart(sts, newVersion); err != nil {
-			return sts, err
+		if err != nil {
+			return obj, err
 		}
 		if recordEvent != nil {
-			recordEvent(sts)
+			recordEvent(obj)
 		}
 	}
 	return nil, nil

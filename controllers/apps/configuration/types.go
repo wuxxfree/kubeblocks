@@ -25,8 +25,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	cfgproto "github.com/apecloud/kubeblocks/internal/configuration/proto"
-	intctrlutil "github.com/apecloud/kubeblocks/internal/controllerutil"
+	cfgproto "github.com/apecloud/kubeblocks/pkg/configuration/proto"
+	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
 )
 
 type createReconfigureClient func(addr string) (cfgproto.ReconfigureClient, error)
@@ -36,6 +36,9 @@ type RestartComponent func(client client.Client, ctx intctrlutil.RequestCtx, key
 
 type RestartContainerFunc func(pod *corev1.Pod, ctx context.Context, containerName []string, createConnFn createReconfigureClient) error
 type OnlineUpdatePodFunc func(pod *corev1.Pod, ctx context.Context, createClient createReconfigureClient, configSpec string, updatedParams map[string]string) error
+
+// Node: Distinguish between implementation and interface.
+// RollingUpgradeFuncs defines the interface, rsm is an implementation of Stateful, Replication and Consensus, not the only solution.
 
 type RollingUpgradeFuncs struct {
 	GetPodsFunc          GetPodsFunc
@@ -49,7 +52,7 @@ func GetConsensusRollingUpgradeFuncs() RollingUpgradeFuncs {
 		GetPodsFunc:          getConsensusPods,
 		RestartContainerFunc: commonStopContainerWithPod,
 		OnlineUpdatePodFunc:  commonOnlineUpdateWithPod,
-		RestartComponent:     restartStatefulComponent,
+		RestartComponent:     restartComponent,
 	}
 }
 
@@ -58,7 +61,7 @@ func GetStatefulSetRollingUpgradeFuncs() RollingUpgradeFuncs {
 		GetPodsFunc:          getStatefulSetPods,
 		RestartContainerFunc: commonStopContainerWithPod,
 		OnlineUpdatePodFunc:  commonOnlineUpdateWithPod,
-		RestartComponent:     restartStatefulComponent,
+		RestartComponent:     restartComponent,
 	}
 }
 
@@ -67,7 +70,7 @@ func GetReplicationRollingUpgradeFuncs() RollingUpgradeFuncs {
 		GetPodsFunc:          getReplicationSetPods,
 		RestartContainerFunc: commonStopContainerWithPod,
 		OnlineUpdatePodFunc:  commonOnlineUpdateWithPod,
-		RestartComponent:     restartStatefulComponent,
+		RestartComponent:     restartComponent,
 	}
 }
 
@@ -76,6 +79,6 @@ func GetDeploymentRollingUpgradeFuncs() RollingUpgradeFuncs {
 		GetPodsFunc:          getDeploymentRollingPods,
 		RestartContainerFunc: commonStopContainerWithPod,
 		OnlineUpdatePodFunc:  commonOnlineUpdateWithPod,
-		RestartComponent:     restartStatelessComponent,
+		RestartComponent:     restartComponent,
 	}
 }

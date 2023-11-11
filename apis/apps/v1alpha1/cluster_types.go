@@ -28,9 +28,10 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	dataprotectionv1alpha1 "github.com/apecloud/kubeblocks/apis/dataprotection/v1alpha1"
-	"github.com/apecloud/kubeblocks/internal/constant"
-	viper "github.com/apecloud/kubeblocks/internal/viperx"
+	dpv1alpha1 "github.com/apecloud/kubeblocks/apis/dataprotection/v1alpha1"
+	workloads "github.com/apecloud/kubeblocks/apis/workloads/v1alpha1"
+	"github.com/apecloud/kubeblocks/pkg/constant"
+	viper "github.com/apecloud/kubeblocks/pkg/viperx"
 )
 
 // ClusterSpec defines the desired state of Cluster.
@@ -63,6 +64,10 @@ type ClusterSpec struct {
 	// +listMapKey=name
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=128
+	// +kubebuilder:validation:XValidation:rule="self.all(x, size(self.filter(c, c.name == x.name)) == 1)",message="duplicated component"
+	// +kubebuilder:validation:XValidation:rule="self.all(x, oldSelf.exists(y, y.name == x.name))",message="component can not be added dynamically"
+	// +kubebuilder:validation:XValidation:rule="oldSelf.all(x, self.exists(y, y.name == x.name))",message="component can not be removed dynamically"
 	ComponentSpecs []ClusterComponentSpec `json:"componentSpecs,omitempty" patchStrategy:"merge,retainKeys" patchMergeKey:"name"`
 
 	// tenancy describes how pods are distributed across node.
@@ -115,18 +120,23 @@ type ClusterBackup struct {
 	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
 
-	// retentionPeriod is a time string ending with the 'd'|'D'|'h'|'H' character to describe how long
-	// the Backup should be retained. if not set, will be retained forever.
-	// +kubebuilder:validation:Pattern:=`^\d+[d|D|h|H]$`
-	// +kubebuilder:default="1d"
+	// retentionPeriod determines a duration up to which the backup should be kept.
+	// controller will remove all backups that are older than the RetentionPeriod.
+	// For example, RetentionPeriod of `30d` will keep only the backups of last 30 days.
+	// Sample duration format:
+	// - years: 	2y
+	// - months: 	6mo
+	// - days: 		30d
+	// - hours: 	12h
+	// - minutes: 	30m
+	// You can also combine the above durations. For example: 30d12h30m
+	// +kubebuilder:default="7d"
 	// +optional
-	RetentionPeriod *string `json:"retentionPeriod,omitempty"`
+	RetentionPeriod dpv1alpha1.RetentionPeriod `json:"retentionPeriod,omitempty"`
 
-	// backup method, support: snapshot, backupTool.
-	// +kubebuilder:validation:Enum=snapshot;backupTool
-	// +kubebuilder:validation:Required
-	// +kubebuilder:default=snapshot
-	Method dataprotectionv1alpha1.BackupMethod `json:"method"`
+	// backup method name to use, that is defined in backupPolicy.
+	// +optional
+	Method string `json:"method"`
 
 	// the cron expression for schedule, the timezone is in UTC. see https://en.wikipedia.org/wiki/Cron.
 	// +optional
@@ -134,9 +144,9 @@ type ClusterBackup struct {
 
 	// startingDeadlineMinutes defines the deadline in minutes for starting the backup job
 	// if it misses scheduled time for any reason.
-	// +optional
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=1440
+	// +optional
 	StartingDeadlineMinutes *int64 `json:"startingDeadlineMinutes,omitempty"`
 
 	// repoName is the name of the backupRepo, if not set, will use the default backupRepo.
@@ -167,6 +177,63 @@ type ClusterStorage struct {
 	Size resource.Quantity `json:"size,omitempty"`
 }
 
+type ResourceMeta struct {
+	// name is the name of the referenced the Configmap/Secret object.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern:=`^[a-z0-9]([a-z0-9\.\-]*[a-z0-9])?$`
+	Name string `json:"name"`
+
+	// mountPath is the path at which to mount the volume.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength=256
+	// +kubebuilder:validation:Pattern:=`^/[a-z]([a-z0-9\-]*[a-z0-9])?$`
+	MountPoint string `json:"mountPoint"`
+
+	// subPath is a relative file path within the volume to mount.
+	// +optional
+	SubPath string `json:"subPath,omitempty"`
+
+	// asVolumeFrom defines the list of containers where volumeMounts will be injected into.
+	// +listType=set
+	// +optional
+	AsVolumeFrom []string `json:"asVolumeFrom,omitempty"`
+}
+
+type SecretRef struct {
+	ResourceMeta `json:",inline"`
+
+	// secret defines the secret volume source.
+	// +kubebuilder:validation:Required
+	Secret corev1.SecretVolumeSource `json:"secret"`
+}
+
+type ConfigMapRef struct {
+	ResourceMeta `json:",inline"`
+
+	// configMap defines the configmap volume source.
+	// +kubebuilder:validation:Required
+	ConfigMap corev1.ConfigMapVolumeSource `json:"configMap"`
+}
+
+type UserResourceRefs struct {
+	// secretRefs defines the user-defined secrets.
+	// +patchMergeKey=name
+	// +patchStrategy=merge,retainKeys
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	SecretRefs []SecretRef `json:"secretRefs,omitempty"`
+
+	// configMapRefs defines the user-defined configmaps.
+	// +patchMergeKey=name
+	// +patchStrategy=merge,retainKeys
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	ConfigMapRefs []ConfigMapRef `json:"configMapRefs,omitempty"`
+}
+
 // ClusterStatus defines the observed state of Cluster.
 type ClusterStatus struct {
 	// observedGeneration is the most recent generation observed for this
@@ -176,12 +243,15 @@ type ClusterStatus struct {
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// phase describes the phase of the Cluster, the detail information of the phases are as following:
-	// Running: cluster is running, all its components are available. [terminal state]
-	// Stopped: cluster has stopped, all its components are stopped. [terminal state]
-	// Failed: cluster is unavailable. [terminal state]
-	// Abnormal: Cluster is still running, but part of its components are Abnormal/Failed. [terminal state]
-	// Creating: Cluster has entered creating process.
-	// Updating: Cluster has entered updating process, triggered by Spec. updated.
+	// Creating: all components are in `Creating` phase.
+	// Running: all components are in `Running` phase, means the cluster is working well.
+	// Updating: all components are in `Creating`, `Running` or `Updating` phase,
+	// and at least one component is in `Creating` or `Updating` phase, means the cluster is doing an update.
+	// Stopping: at least one component is in `Stopping` phase, means the cluster is in a stop progress.
+	// Stopped: all components are in 'Stopped` phase, means the cluster has stopped and didn't provide any function anymore.
+	// Failed: all components are in `Failed` phase, means the cluster is unavailable.
+	// Abnormal: some components are in `Failed` or `Abnormal` phase, means the cluster in a fragile state. troubleshoot need to be done.
+	// Deleting: the cluster is being deleted.
 	// +optional
 	Phase ClusterPhase `json:"phase,omitempty"`
 
@@ -209,6 +279,7 @@ type ClusterComponentSpec struct {
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MaxLength=22
 	// +kubebuilder:validation:Pattern:=`^[a-z]([a-z0-9\-]*[a-z0-9])?$`
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="name is immutable"
 	Name string `json:"name"`
 
 	// componentDefRef references componentDef defined in ClusterDefinition spec. Need to
@@ -216,11 +287,20 @@ type ClusterComponentSpec struct {
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MaxLength=22
 	// +kubebuilder:validation:Pattern:=`^[a-z]([a-z0-9\-]*[a-z0-9])?$`
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="componentDefRef is immutable"
 	ComponentDefRef string `json:"componentDefRef"`
 
 	// classDefRef references the class defined in ComponentClassDefinition.
 	// +optional
 	ClassDefRef *ClassDefRef `json:"classDefRef,omitempty"`
+
+	// serviceRefs define service references for the current component. Based on the referenced services, they can be categorized into two types:
+	// Service provided by external sources: These services are provided by external sources and are not managed by KubeBlocks. They can be Kubernetes-based or non-Kubernetes services. For external services, you need to provide an additional ServiceDescriptor object to establish the service binding.
+	// Service provided by other KubeBlocks clusters: These services are provided by other KubeBlocks clusters. You can bind to these services by specifying the name of the hosting cluster.
+	// Each type of service reference requires specific configurations and bindings to establish the connection and interaction with the respective services.
+	// It should be noted that the ServiceRef has cluster-level semantic consistency, meaning that within the same Cluster, service references with the same ServiceRef.Name are considered to be the same service. It is only allowed to bind to the same Cluster or ServiceDescriptor.
+	// +optional
+	ServiceRefs []ServiceRef `json:"serviceRefs,omitempty"`
 
 	// monitor is a switch to enable monitoring and is set as false by default.
 	// KubeBlocks provides an extension mechanism to support component level monitoring,
@@ -289,6 +369,10 @@ type ClusterComponentSpec struct {
 	// +kubebuilder:default=false
 	// +optional
 	NoCreatePDB bool `json:"noCreatePDB,omitempty"`
+
+	// userResourceRefs defines the user-defined volumes.
+	// +optional
+	UserResourceRefs *UserResourceRefs `json:"userResourceRefs,omitempty"`
 }
 
 // GetMinAvailable wraps the 'prefer' value return. As for component replicaCount <= 1, it will return 0,
@@ -312,14 +396,14 @@ type ComponentMessageMap map[string]string
 // ClusterComponentStatus records components status.
 type ClusterComponentStatus struct {
 	// phase describes the phase of the component and the detail information of the phases are as following:
-	// Running: the component is running. [terminal state]
-	// Stopped: the component is stopped, as no running pod. [terminal state]
-	// Failed: the component is unavailable, i.e. all pods are not ready for Stateless/Stateful component and
-	// Leader/Primary pod is not ready for Consensus/Replication component. [terminal state]
-	// Abnormal: the component is running but part of its pods are not ready.
-	// Leader/Primary pod is ready for Consensus/Replication component. [terminal state]
-	// Creating: the component has entered creating process.
-	// Updating: the component has entered updating process, triggered by Spec. updated.
+	// Creating: `Creating` is a special `Updating` with previous phase `empty`(means "") or `Creating`.
+	// Running: component replicas > 0 and all pod specs are latest with a Running state.
+	// Updating: component replicas > 0 and has no failed pods. the component is being updated.
+	// Abnormal: component replicas > 0 but having some failed pods. the component basically works but in a fragile state.
+	// Failed: component replicas > 0 but having some failed pods. the component doesn't work anymore.
+	// Stopping: component replicas = 0 and has terminating pods.
+	// Stopped: component replicas = 0 and all pods have been deleted.
+	// Deleting: the component is being deleted.
 	Phase ClusterComponentPhase `json:"phase,omitempty"`
 
 	// message records the component details message in current phase.
@@ -338,11 +422,17 @@ type ClusterComponentStatus struct {
 
 	// consensusSetStatus specifies the mapping of role and pod name.
 	// +optional
+	// +kubebuilder:deprecatedversion:warning="This field is deprecated from KB 0.7.0, use MembersStatus instead."
 	ConsensusSetStatus *ConsensusSetStatus `json:"consensusSetStatus,omitempty"`
 
 	// replicationSetStatus specifies the mapping of role and pod name.
 	// +optional
+	// +kubebuilder:deprecatedversion:warning="This field is deprecated from KB 0.7.0, use MembersStatus instead."
 	ReplicationSetStatus *ReplicationSetStatus `json:"replicationSetStatus,omitempty"`
+
+	// members' status.
+	// +optional
+	MembersStatus []workloads.MemberStatus `json:"membersStatus,omitempty"`
 }
 
 type ConsensusSetStatus struct {
@@ -416,10 +506,12 @@ type ClusterComponentVolumeClaimTemplate struct {
 }
 
 func (r *ClusterComponentVolumeClaimTemplate) toVolumeClaimTemplate() corev1.PersistentVolumeClaimTemplate {
-	t := corev1.PersistentVolumeClaimTemplate{}
-	t.ObjectMeta.Name = r.Name
-	t.Spec = r.Spec.ToV1PersistentVolumeClaimSpec()
-	return t
+	return corev1.PersistentVolumeClaimTemplate{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: r.Name,
+		},
+		Spec: r.Spec.ToV1PersistentVolumeClaimSpec(),
+	}
 }
 
 type PersistentVolumeClaimSpec struct {
@@ -440,12 +532,9 @@ type PersistentVolumeClaimSpec struct {
 	// More info: https://kubernetes.io/docs/concepts/storage/persistent-volumes#class-1.
 	// +optional
 	StorageClassName *string `json:"storageClassName,omitempty" protobuf:"bytes,5,opt,name=storageClassName"`
-	// TODO:
-	// // preferStorageClassNames added support specifying storageclasses.storage.k8s.io names, in order
-	// // to adapt multi-cloud deployment, where storageclasses are all distinctly different among clouds.
-	// // +listType=set
-	// // +optional
-	// PreferSCNames []string `json:"preferStorageClassNames,omitempty"`
+	// volumeMode defines what type of volume is required by the claim.
+	// +optional
+	VolumeMode *corev1.PersistentVolumeMode `json:"volumeMode,omitempty" protobuf:"bytes,6,opt,name=volumeMode,casttype=PersistentVolumeMode"`
 }
 
 // ToV1PersistentVolumeClaimSpec converts to corev1.PersistentVolumeClaimSpec.
@@ -453,21 +542,21 @@ func (r *PersistentVolumeClaimSpec) ToV1PersistentVolumeClaimSpec() corev1.Persi
 	return corev1.PersistentVolumeClaimSpec{
 		AccessModes:      r.AccessModes,
 		Resources:        r.Resources,
-		StorageClassName: r.GetStorageClassName(viper.GetString(constant.CfgKeyDefaultStorageClass)),
+		StorageClassName: r.getStorageClassName(viper.GetString(constant.CfgKeyDefaultStorageClass)),
+		VolumeMode:       r.VolumeMode,
 	}
 }
 
-// GetStorageClassName returns PersistentVolumeClaimSpec.StorageClassName if a value is assigned; otherwise,
+// getStorageClassName returns PersistentVolumeClaimSpec.StorageClassName if a value is assigned; otherwise,
 // it returns preferSC argument.
-func (r *PersistentVolumeClaimSpec) GetStorageClassName(preferSC string) *string {
+func (r *PersistentVolumeClaimSpec) getStorageClassName(preferSC string) *string {
 	if r.StorageClassName != nil && *r.StorageClassName != "" {
 		return r.StorageClassName
 	}
-
-	if preferSC == "" {
-		return nil
+	if preferSC != "" {
+		return &preferSC
 	}
-	return &preferSC
+	return nil
 }
 
 type Affinity struct {
@@ -598,6 +687,34 @@ type ClusterNetwork struct {
 	// +kubebuilder:default=false
 	// +optional
 	PubliclyAccessible bool `json:"publiclyAccessible,omitempty"`
+}
+
+type ServiceRef struct {
+	// name of the service reference declaration. references the serviceRefDeclaration name defined in clusterDefinition.componentDefs[*].serviceRefDeclarations[*].name
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// namespace defines the namespace of the referenced Cluster or the namespace of the referenced ServiceDescriptor object.
+	// If not set, the referenced Cluster and ServiceDescriptor will be searched in the namespace of the current cluster by default.
+	// +optional
+	Namespace string `json:"namespace,omitempty" protobuf:"bytes,3,opt,name=namespace"`
+
+	// When referencing a service provided by other KubeBlocks cluster, you need to provide the name of the Cluster being referenced.
+	// By default, when other KubeBlocks Cluster are referenced, the ClusterDefinition.spec.connectionCredential secret corresponding to the referenced Cluster will be used to bind to the current component.
+	// Currently, if a KubeBlocks cluster is to be referenced, the connection credential secret should include and correspond to the following fields: endpoint, port, username, and password.
+	// Under this referencing approach, the ServiceKind and ServiceVersion of service reference declaration defined in the ClusterDefinition will not be validated.
+	// If both Cluster and ServiceDescriptor are specified, the Cluster takes precedence.
+	// +optional
+	Cluster string `json:"cluster,omitempty"`
+
+	// serviceDescriptor defines the service descriptor of the service provided by external sources.
+	// When referencing a service provided by external sources, you need to provide the ServiceDescriptor object name to establish the service binding.
+	// And serviceDescriptor is the name of the ServiceDescriptor object, furthermore, the ServiceDescriptor.spec.serviceKind and ServiceDescriptor.spec.serviceVersion
+	// should match clusterDefinition.componentDefs[*].serviceRefDeclarations[*].serviceRefDeclarationSpecs[*].serviceKind
+	// and the regular expression defines in clusterDefinition.componentDefs[*].serviceRefDeclarations[*].serviceRefDeclarationSpecs[*].serviceVersion.
+	// If both Cluster and ServiceDescriptor are specified, the Cluster takes precedence.
+	// +optional
+	ServiceDescriptor string `json:"serviceDescriptor,omitempty"`
 }
 
 // +genclient
@@ -828,7 +945,7 @@ func GetClusterUpRunningPhases() []ClusterPhase {
 func GetReconfiguringRunningPhases() []ClusterPhase {
 	return []ClusterPhase{
 		RunningClusterPhase,
-		SpecReconcilingClusterPhase, // enable partial running for reconfiguring
+		UpdatingClusterPhase, // enable partial running for reconfiguring
 		AbnormalClusterPhase,
 		FailedClusterPhase,
 	}

@@ -24,7 +24,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -38,16 +37,15 @@ import (
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
 	workloads "github.com/apecloud/kubeblocks/apis/workloads/v1alpha1"
-	"github.com/apecloud/kubeblocks/internal/constant"
-	"github.com/apecloud/kubeblocks/internal/controller/builder"
-	client2 "github.com/apecloud/kubeblocks/internal/controller/client"
-	componentutil "github.com/apecloud/kubeblocks/internal/controller/component"
-	"github.com/apecloud/kubeblocks/internal/controller/graph"
-	"github.com/apecloud/kubeblocks/internal/controller/model"
-	ictrltypes "github.com/apecloud/kubeblocks/internal/controller/types"
-	intctrlutil "github.com/apecloud/kubeblocks/internal/controllerutil"
-	"github.com/apecloud/kubeblocks/internal/generics"
-	viper "github.com/apecloud/kubeblocks/internal/viperx"
+	"github.com/apecloud/kubeblocks/pkg/constant"
+	"github.com/apecloud/kubeblocks/pkg/controller/builder"
+	client2 "github.com/apecloud/kubeblocks/pkg/controller/client"
+	componentutil "github.com/apecloud/kubeblocks/pkg/controller/component"
+	"github.com/apecloud/kubeblocks/pkg/controller/graph"
+	"github.com/apecloud/kubeblocks/pkg/controller/model"
+	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
+	"github.com/apecloud/kubeblocks/pkg/generics"
+	viper "github.com/apecloud/kubeblocks/pkg/viperx"
 )
 
 var (
@@ -55,7 +53,7 @@ var (
 )
 
 func listObjWithLabelsInNamespace[T generics.Object, PT generics.PObject[T], L generics.ObjList[T], PL generics.PObjList[T, L]](
-	ctx context.Context, cli client.Client, _ func(T, L), namespace string, labels client.MatchingLabels) ([]PT, error) {
+	ctx context.Context, cli client.Client, _ func(T, PT, L, PL), namespace string, labels client.MatchingLabels) ([]PT, error) {
 	var objList L
 	if err := cli.List(ctx, PL(&objList), labels, client.InNamespace(namespace)); err != nil {
 		return nil, err
@@ -71,14 +69,6 @@ func listObjWithLabelsInNamespace[T generics.Object, PT generics.PObject[T], L g
 
 func listRSMOwnedByComponent(ctx context.Context, cli client.Client, namespace string, labels client.MatchingLabels) ([]*workloads.ReplicatedStateMachine, error) {
 	return listObjWithLabelsInNamespace(ctx, cli, generics.RSMSignature, namespace, labels)
-}
-
-func listStsOwnedByComponent(ctx context.Context, cli client.Client, namespace string, labels client.MatchingLabels) ([]*appsv1.StatefulSet, error) {
-	return listObjWithLabelsInNamespace(ctx, cli, generics.StatefulSetSignature, namespace, labels)
-}
-
-func listDeployOwnedByComponent(ctx context.Context, cli client.Client, namespace string, labels client.MatchingLabels) ([]*appsv1.Deployment, error) {
-	return listObjWithLabelsInNamespace(ctx, cli, generics.DeploymentSignature, namespace, labels)
 }
 
 func listPodOwnedByComponent(ctx context.Context, cli client.Client, namespace string, labels client.MatchingLabels) ([]*corev1.Pod, error) {
@@ -353,75 +343,6 @@ func getCompRelatedObjectList(ctx context.Context,
 	return podList, nil
 }
 
-// availableReplicasAreConsistent checks if expected replicas number of component is consistent with
-// the number of available workload replicas.
-func availableReplicasAreConsistent(componentReplicas, podCount, workloadAvailableReplicas int32) bool {
-	return workloadAvailableReplicas == componentReplicas && componentReplicas == podCount
-}
-
-// getPhaseWithNoAvailableReplicas gets the component phase when the workload of component has no available replicas.
-func getPhaseWithNoAvailableReplicas(componentReplicas int32) appsv1alpha1.ClusterComponentPhase {
-	if componentReplicas == 0 {
-		return ""
-	}
-	return appsv1alpha1.FailedClusterCompPhase
-}
-
-// getComponentPhaseWhenPodsNotReady gets the component phase when pods of component are not ready.
-func getComponentPhaseWhenPodsNotReady(podList *corev1.PodList,
-	workload metav1.Object,
-	componentReplicas,
-	availableReplicas int32,
-	checkLeaderIsReady func(pod *corev1.Pod, workload metav1.Object) bool,
-	checkFailedPodRevision func(pod *corev1.Pod, workload metav1.Object) bool) appsv1alpha1.ClusterComponentPhase {
-	podCount := len(podList.Items)
-	if podCount == 0 || availableReplicas == 0 {
-		return getPhaseWithNoAvailableReplicas(componentReplicas)
-	}
-	var (
-		existLatestRevisionFailedPod bool
-		leaderIsReady                bool
-	)
-	for _, v := range podList.Items {
-		// if the pod is terminating, ignore it
-		if v.DeletionTimestamp != nil {
-			return ""
-		}
-		if checkLeaderIsReady == nil || checkLeaderIsReady(&v, workload) {
-			leaderIsReady = true
-		}
-		if checkFailedPodRevision != nil && checkFailedPodRevision(&v, workload) {
-			existLatestRevisionFailedPod = true
-		}
-	}
-	return getCompPhaseByConditions(existLatestRevisionFailedPod, leaderIsReady,
-		componentReplicas, int32(podCount), availableReplicas)
-}
-
-// getCompPhaseByConditions gets the component phase according to the following conditions:
-// 1. if the failed pod is not controlled by the latest revision, ignore it.
-// 2. if the primary replicas are not available, the component is failed.
-// 3. finally if expected replicas number of component is inconsistent with
-// the number of available workload replicas, the component is abnormal.
-func getCompPhaseByConditions(existLatestRevisionFailedPod bool,
-	primaryReplicasAvailable bool,
-	compReplicas,
-	podCount,
-	availableReplicas int32) appsv1alpha1.ClusterComponentPhase {
-	// if the failed pod is not controlled by the latest revision, ignore it.
-	if !existLatestRevisionFailedPod {
-		return ""
-	}
-	if !primaryReplicasAvailable {
-		return appsv1alpha1.FailedClusterCompPhase
-	}
-	// checks if expected replicas number of component is consistent with the number of available workload replicas.
-	if !availableReplicasAreConsistent(compReplicas, podCount, availableReplicas) {
-		return appsv1alpha1.AbnormalClusterCompPhase
-	}
-	return ""
-}
-
 // parseCustomLabelPattern parses the custom label pattern to GroupVersionKind.
 func parseCustomLabelPattern(pattern string) (schema.GroupVersionKind, error) {
 	patterns := strings.Split(pattern, "/")
@@ -442,35 +363,10 @@ func parseCustomLabelPattern(pattern string) (schema.GroupVersionKind, error) {
 	return schema.GroupVersionKind{}, fmt.Errorf("invalid pattern %s", pattern)
 }
 
-// SortPods sorts pods by their role priority
-func SortPods(pods []corev1.Pod, priorityMap map[string]int, idLabelKey string) {
-	// make a Serial pod list,
-	// e.g.: unknown -> empty -> learner -> follower1 -> follower2 -> leader, with follower1.Name < follower2.Name
-	sort.SliceStable(pods, func(i, j int) bool {
-		roleI := pods[i].Labels[idLabelKey]
-		roleJ := pods[j].Labels[idLabelKey]
-		if priorityMap[roleI] == priorityMap[roleJ] {
-			_, ordinal1 := intctrlutil.GetParentNameAndOrdinal(&pods[i])
-			_, ordinal2 := intctrlutil.GetParentNameAndOrdinal(&pods[j])
-			return ordinal1 < ordinal2
-		}
-		return priorityMap[roleI] < priorityMap[roleJ]
-	})
-}
-
 // replaceKBEnvPlaceholderTokens replaces the placeholder tokens in the string strToReplace with builtInEnvMap and return new string.
 func replaceKBEnvPlaceholderTokens(clusterName, uid, componentName, strToReplace string) string {
 	builtInEnvMap := componentutil.GetReplacementMapForBuiltInEnv(clusterName, uid, componentName)
 	return componentutil.ReplaceNamedVars(builtInEnvMap, strToReplace, -1, true)
-}
-
-// getRunningPods gets the running pods of the specified statefulSet.
-func getRunningPods(ctx context.Context, cli client.Client, obj client.Object) ([]corev1.Pod, error) {
-	sts := convertToStatefulSet(obj)
-	if sts == nil || sts.Generation != sts.Status.ObservedGeneration {
-		return nil, nil
-	}
-	return GetPodListByStatefulSet(ctx, cli, sts)
 }
 
 // resolvePodSpecDefaultFields set default value for some known fields of proto PodSpec @pobj.
@@ -536,12 +432,6 @@ func resolvePodSpecDefaultFields(obj corev1.PodSpec, pobj *corev1.PodSpec) {
 		if cc.StartupProbe != nil && c.StartupProbe != nil {
 			resolveContainerProbe(*c.StartupProbe, cc.StartupProbe)
 		}
-	}
-	min := func(a, b int) int {
-		if a < b {
-			return a
-		}
-		return b
 	}
 	for i := 0; i < min(len(obj.Volumes), len(pobj.Volumes)); i++ {
 		resolveVolume(obj.Volumes[i], &pobj.Volumes[i])
@@ -688,7 +578,8 @@ func updateComponentInfoToPods(
 		return err
 	}
 	// list all pods in dag
-	podVertices := ictrltypes.FindAll[*corev1.Pod](dag)
+	graphCli := model.NewGraphClient(cli)
+	pods := graphCli.FindAll(dag, &corev1.Pod{})
 
 	replicasStr := strconv.Itoa(int(component.Replicas))
 	updateAnnotation := func(obj client.Object) {
@@ -706,19 +597,17 @@ func updateComponentInfoToPods(
 			pod.Annotations[constant.ComponentReplicasAnnotationKey] == replicasStr {
 			continue
 		}
-		idx := slices.IndexFunc(podVertices, func(vertex graph.Vertex) bool {
-			v, _ := vertex.(*ictrltypes.LifecycleVertex)
-			return v.Obj.GetName() == pod.Name
+		idx := slices.IndexFunc(pods, func(obj client.Object) bool {
+			return obj.GetName() == pod.Name
 		})
 		// pod already in dag, merge annotations
 		if idx >= 0 {
-			v, _ := podVertices[idx].(*ictrltypes.LifecycleVertex)
-			updateAnnotation(v.Obj)
+			updateAnnotation(pods[idx])
 			continue
 		}
 		// pod not in dag, add a new vertex
 		updateAnnotation(pod)
-		dag.AddVertex(&ictrltypes.LifecycleVertex{Obj: pod, Action: ictrltypes.ActionUpdatePtr()})
+		graphCli.Do(dag, nil, pod, model.ActionUpdatePtr(), nil)
 	}
 	return nil
 }
@@ -733,7 +622,8 @@ func updateCustomLabelToPods(ctx context.Context,
 		return nil
 	}
 	// list all pods in dag
-	podVertices := ictrltypes.FindAll[*corev1.Pod](dag)
+	graphCli := model.NewGraphClient(cli)
+	pods := graphCli.FindAll(dag, &corev1.Pod{})
 
 	for _, customLabelSpec := range component.CustomLabelSpecs {
 		for _, resource := range customLabelSpec.Resources {
@@ -755,19 +645,17 @@ func updateCustomLabelToPods(ctx context.Context,
 			}
 
 			for i := range podList.Items {
-				idx := slices.IndexFunc(podVertices, func(vertex graph.Vertex) bool {
-					v, _ := vertex.(*ictrltypes.LifecycleVertex)
-					return v.Obj.GetName() == podList.Items[i].Name
+				idx := slices.IndexFunc(pods, func(obj client.Object) bool {
+					return obj.GetName() == podList.Items[i].Name
 				})
 				// pod already in dag, merge labels
 				if idx >= 0 {
-					v, _ := podVertices[idx].(*ictrltypes.LifecycleVertex)
-					updateObjLabel(cluster.Name, string(cluster.UID), component.Name, customLabelSpec, v.Obj)
+					updateObjLabel(cluster.Name, string(cluster.UID), component.Name, customLabelSpec, pods[idx])
 					continue
 				}
 				pod := &podList.Items[i]
 				updateObjLabel(cluster.Name, string(cluster.UID), component.Name, customLabelSpec, pod)
-				dag.AddVertex(&ictrltypes.LifecycleVertex{Obj: pod, Action: ictrltypes.ActionUpdatePtr()})
+				graphCli.Do(dag, nil, pod, model.ActionUpdatePtr(), nil)
 			}
 		}
 	}
@@ -817,4 +705,41 @@ func updateCustomLabelToObjs(clusterName, uid, componentName string,
 		}
 	}
 	return nil
+}
+
+// IsComponentPodsWithLatestRevision checks whether the underlying pod spec matches the one declared in the Cluster/Component.
+func IsComponentPodsWithLatestRevision(ctx context.Context, cli client.Client,
+	cluster *appsv1alpha1.Cluster, rsm *workloads.ReplicatedStateMachine) (bool, error) {
+	if cluster == nil || rsm == nil {
+		return false, nil
+	}
+	// check whether component spec has been sent to rsm
+	rsmComponentGeneration := rsm.GetAnnotations()[constant.KubeBlocksGenerationKey]
+	if cluster.Status.ObservedGeneration != cluster.Generation ||
+		rsmComponentGeneration != strconv.FormatInt(cluster.Generation, 10) {
+		return false, nil
+	}
+	// check whether rsm spec has been sent to the underlying workload(sts)
+	if rsm.Status.ObservedGeneration != rsm.Generation ||
+		rsm.Status.CurrentGeneration != rsm.Generation {
+		return false, nil
+	}
+	// check whether the underlying workload(sts) has sent the latest template to pods
+	sts := &appsv1.StatefulSet{}
+	if err := cli.Get(ctx, client.ObjectKeyFromObject(rsm), sts); err != nil {
+		return false, err
+	}
+	if sts.Status.ObservedGeneration != sts.Generation {
+		return false, nil
+	}
+	pods, err := listPodOwnedByComponent(ctx, cli, rsm.Namespace, rsm.Spec.Selector.MatchLabels)
+	if err != nil {
+		return false, err
+	}
+	for _, pod := range pods {
+		if intctrlutil.GetPodRevision(pod) != sts.Status.UpdateRevision {
+			return false, nil
+		}
+	}
+	return true, nil
 }

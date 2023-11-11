@@ -32,9 +32,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
+	workloads "github.com/apecloud/kubeblocks/apis/workloads/v1alpha1"
 	"github.com/apecloud/kubeblocks/controllers/apps/components"
 	opsutil "github.com/apecloud/kubeblocks/controllers/apps/operations/util"
-	intctrlutil "github.com/apecloud/kubeblocks/internal/controllerutil"
+	"github.com/apecloud/kubeblocks/pkg/configuration/core"
+	"github.com/apecloud/kubeblocks/pkg/constant"
+	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
 )
 
 // componentFailedTimeout when the duration of component failure exceeds this threshold, it is determined that opsRequest has failed
@@ -58,7 +61,7 @@ type handleStatusProgressWithComponent func(reqCtx intctrlutil.RequestCtx,
 	pgRes progressResource,
 	compStatus *appsv1alpha1.OpsRequestComponentStatus) (expectProgressCount int32, succeedCount int32, err error)
 
-type handleReconfigureOpsStatus func(cmStatus *appsv1alpha1.ConfigurationStatus) error
+type handleReconfigureOpsStatus func(cmStatus *appsv1alpha1.ConfigurationItemStatus) error
 
 // reconcileActionWithComponentOps will be performed when action is done and loops till OpsRequest.status.phase is Succeed/Failed.
 // the common function to reconcile opsRequest status when the opsRequest will affect the lifecycle of the components.
@@ -96,7 +99,7 @@ func reconcileActionWithComponentOps(reqCtx intctrlutil.RequestCtx,
 	if opsRequest.Status.Components == nil {
 		opsRequest.Status.Components = map[string]appsv1alpha1.OpsRequestComponentStatus{}
 	}
-	opsIsCompleted := opsRequestHasProcessed(*opsRes)
+	opsIsCompleted := opsRequestHasProcessed(reqCtx, cli, *opsRes)
 	for k, v := range opsRes.Cluster.Status.Components {
 		if _, ok = componentNameMap[k]; !ok && !checkAllClusterComponent {
 			continue
@@ -146,8 +149,7 @@ func reconcileActionWithComponentOps(reqCtx intctrlutil.RequestCtx,
 		}
 	}
 	// check if the cluster has applied the changes of the opsRequest and wait for the cluster to finish processing the ops.
-	if opsRes.ToClusterPhase == opsRes.Cluster.Status.Phase ||
-		opsRes.Cluster.Status.ObservedGeneration < opsRes.OpsRequest.Status.ClusterGeneration {
+	if !opsIsCompleted {
 		return opsRequestPhase, 0, nil
 	}
 
@@ -165,9 +167,27 @@ func reconcileActionWithComponentOps(reqCtx intctrlutil.RequestCtx,
 }
 
 // opsRequestHasProcessed checks if the opsRequest has been processed.
-func opsRequestHasProcessed(opsRes OpsResource) bool {
-	return opsRes.ToClusterPhase != opsRes.Cluster.Status.Phase &&
-		opsRes.Cluster.Status.ObservedGeneration >= opsRes.OpsRequest.Status.ClusterGeneration
+func opsRequestHasProcessed(reqCtx intctrlutil.RequestCtx, cli client.Client, opsRes OpsResource) bool {
+	if opsRes.ToClusterPhase == opsRes.Cluster.Status.Phase {
+		return false
+	}
+	// if all pods of all components are with latest revision, ops has processed
+	rsmList := &workloads.ReplicatedStateMachineList{}
+	if err := cli.List(reqCtx.Ctx, rsmList,
+		client.InNamespace(opsRes.Cluster.Namespace),
+		client.MatchingLabels{constant.AppInstanceLabelKey: opsRes.Cluster.Name}); err != nil {
+		return false
+	}
+	for _, rsm := range rsmList.Items {
+		isLatestRevision, err := components.IsComponentPodsWithLatestRevision(reqCtx.Ctx, cli, opsRes.Cluster, &rsm)
+		if err != nil {
+			return false
+		}
+		if !isLatestRevision {
+			return false
+		}
+	}
+	return true
 }
 
 // getClusterDefByName gets the ClusterDefinition object by the name.
@@ -231,8 +251,8 @@ func PatchClusterNotFound(ctx context.Context, cli client.Client, opsRes *OpsRes
 	return PatchOpsStatus(ctx, cli, opsRes, appsv1alpha1.OpsFailedPhase, condition)
 }
 
-// patchOpsHandlerNotSupported patches OpsNotSupported condition to the OpsRequest.status.conditions.
-func patchOpsHandlerNotSupported(ctx context.Context, cli client.Client, opsRes *OpsResource) error {
+// PatchOpsHandlerNotSupported patches OpsNotSupported condition to the OpsRequest.status.conditions.
+func PatchOpsHandlerNotSupported(ctx context.Context, cli client.Client, opsRes *OpsResource) error {
 	message := fmt.Sprintf("spec.type %s is not supported by operator", opsRes.OpsRequest.Spec.Type)
 	condition := appsv1alpha1.NewValidateFailedCondition(appsv1alpha1.ReasonOpsTypeNotSupported, message)
 	return PatchOpsStatus(ctx, cli, opsRes, appsv1alpha1.OpsFailedPhase, condition)
@@ -340,9 +360,11 @@ func updateReconfigureStatusByCM(reconfiguringStatus *appsv1alpha1.Reconfiguring
 		}
 	}
 	cmCount := len(reconfiguringStatus.ConfigurationStatus)
-	reconfiguringStatus.ConfigurationStatus = append(reconfiguringStatus.ConfigurationStatus, appsv1alpha1.ConfigurationStatus{
-		Name:   tplName,
-		Status: appsv1alpha1.ReasonReconfigureMerging,
+	reconfiguringStatus.ConfigurationStatus = append(reconfiguringStatus.ConfigurationStatus, appsv1alpha1.ConfigurationItemStatus{
+		Name:          tplName,
+		Status:        appsv1alpha1.ReasonReconfigurePersisting,
+		SucceedCount:  core.NotStarted,
+		ExpectedCount: core.Unconfirmed,
 	})
 	cmStatus := &reconfiguringStatus.ConfigurationStatus[cmCount]
 	return handleReconfigureStatus(cmStatus)
@@ -362,7 +384,7 @@ func patchReconfigureOpsStatus(
 	var opsRequest = opsRes.OpsRequest
 	if opsRequest.Status.ReconfiguringStatus == nil {
 		opsRequest.Status.ReconfiguringStatus = &appsv1alpha1.ReconfiguringStatus{
-			ConfigurationStatus: make([]appsv1alpha1.ConfigurationStatus, 0),
+			ConfigurationStatus: make([]appsv1alpha1.ConfigurationItemStatus, 0),
 		}
 	}
 
@@ -371,8 +393,8 @@ func patchReconfigureOpsStatus(
 }
 
 // getSlowestReconfiguringProgress gets the progress of the reconfiguring operations.
-func getSlowestReconfiguringProgress(status []appsv1alpha1.ConfigurationStatus) string {
-	slowest := appsv1alpha1.ConfigurationStatus{
+func getSlowestReconfiguringProgress(status []appsv1alpha1.ConfigurationItemStatus) string {
+	slowest := appsv1alpha1.ConfigurationItemStatus{
 		SucceedCount:  math.MaxInt32,
 		ExpectedCount: -1,
 	}
@@ -417,6 +439,10 @@ func cancelComponentOps(ctx context.Context,
 // validateOpsWaitingPhase validates whether the current cluster phase is expected, and whether the waiting time exceeds the limit.
 // only requests with `Pending` phase will be validated.
 func validateOpsWaitingPhase(cluster *appsv1alpha1.Cluster, ops *appsv1alpha1.OpsRequest, opsBehaviour OpsBehaviour) error {
+	// if opsRequest don't need to wait for the cluster phase
+	// or opsRequest status.phase is not Pending,
+	// or opsRequest will create cluster,
+	// we don't validate the cluster phase.
 	if len(opsBehaviour.FromClusterPhases) == 0 || ops.Status.Phase != appsv1alpha1.OpsPendingPhase {
 		return nil
 	}

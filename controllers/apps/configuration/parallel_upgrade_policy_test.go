@@ -26,10 +26,10 @@ import (
 	"github.com/golang/mock/gomock"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
-	cfgcore "github.com/apecloud/kubeblocks/internal/configuration/core"
-	cfgproto "github.com/apecloud/kubeblocks/internal/configuration/proto"
-	mock_proto "github.com/apecloud/kubeblocks/internal/configuration/proto/mocks"
-	testutil "github.com/apecloud/kubeblocks/internal/testutil/k8s"
+	cfgcore "github.com/apecloud/kubeblocks/pkg/configuration/core"
+	cfgproto "github.com/apecloud/kubeblocks/pkg/configuration/proto"
+	mock_proto "github.com/apecloud/kubeblocks/pkg/configuration/proto/mocks"
+	testutil "github.com/apecloud/kubeblocks/pkg/testutil/k8s"
 )
 
 var parallelPolicy = parallelUpgradePolicy{}
@@ -66,6 +66,7 @@ var _ = Describe("Reconfigure ParallelPolicy", func() {
 					return reconfigureClient, nil
 				}),
 				withMockStatefulSet(3, nil),
+				withClusterComponent(3),
 				withConfigSpec("for_test", map[string]string{
 					"a": "b",
 				}),
@@ -94,6 +95,7 @@ var _ = Describe("Reconfigure ParallelPolicy", func() {
 					return reconfigureClient, nil
 				}),
 				withMockStatefulSet(3, nil),
+				withClusterComponent(3),
 				withConfigSpec("for_test", map[string]string{
 					"a": "b",
 				}),
@@ -111,7 +113,7 @@ var _ = Describe("Reconfigure ParallelPolicy", func() {
 			status, err := parallelPolicy.Upgrade(mockParam)
 			// first failed
 			Expect(err).Should(BeEquivalentTo(getPodsError))
-			Expect(status.Status).Should(BeEquivalentTo(ESAndRetryFailed))
+			Expect(status.Status).Should(BeEquivalentTo(ESFailedAndRetry))
 		})
 	})
 
@@ -133,6 +135,7 @@ var _ = Describe("Reconfigure ParallelPolicy", func() {
 					return reconfigureClient, nil
 				}),
 				withMockStatefulSet(3, nil),
+				withClusterComponent(3),
 				withConfigSpec("for_test", map[string]string{
 					"a": "b",
 				}),
@@ -150,12 +153,12 @@ var _ = Describe("Reconfigure ParallelPolicy", func() {
 			status, err := parallelPolicy.Upgrade(mockParam)
 			// first failed
 			Expect(err).Should(BeEquivalentTo(stopError))
-			Expect(status.Status).Should(BeEquivalentTo(ESAndRetryFailed))
+			Expect(status.Status).Should(BeEquivalentTo(ESFailedAndRetry))
 
 			status, err = parallelPolicy.Upgrade(mockParam)
 			Expect(err).ShouldNot(Succeed())
 			Expect(err.Error()).Should(ContainSubstring("failed to stop container"))
-			Expect(status.Status).Should(BeEquivalentTo(ESAndRetryFailed))
+			Expect(status.Status).Should(BeEquivalentTo(ESFailedAndRetry))
 		})
 	})
 
@@ -174,6 +177,7 @@ var _ = Describe("Reconfigure ParallelPolicy", func() {
 					return reconfigureClient, nil
 				}),
 				withMockStatefulSet(3, nil),
+				withClusterComponent(3),
 				withConfigSpec("for_test", map[string]string{
 					"a": "b",
 				}),
@@ -191,7 +195,7 @@ var _ = Describe("Reconfigure ParallelPolicy", func() {
 			status, err := parallelPolicy.Upgrade(mockParam)
 			// first failed
 			Expect(err).Should(BeEquivalentTo(patchError))
-			Expect(status.Status).Should(BeEquivalentTo(ESAndRetryFailed))
+			Expect(status.Status).Should(BeEquivalentTo(ESFailedAndRetry))
 		})
 	})
 
@@ -203,6 +207,7 @@ var _ = Describe("Reconfigure ParallelPolicy", func() {
 				withConfigSpec("for_test", map[string]string{
 					"key": "value",
 				}),
+				withClusterComponent(2),
 				withCDComponent(appsv1alpha1.Stateless, []appsv1alpha1.ComponentConfigSpec{{
 					ComponentTemplateSpec: appsv1alpha1.ComponentTemplateSpec{
 						Name:       "for_test",

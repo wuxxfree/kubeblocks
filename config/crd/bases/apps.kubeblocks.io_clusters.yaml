@@ -2,8 +2,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.9.0
-  creationTimestamp: null
+    controller-gen.kubebuilder.io/version: v0.12.1
   labels:
     app.kubernetes.io/name: kubeblocks
   name: clusters.apps.kubeblocks.io
@@ -119,15 +118,7 @@ spec:
                     description: enabled defines whether to enable automated backup.
                     type: boolean
                   method:
-                    allOf:
-                    - enum:
-                      - snapshot
-                      - backupTool
-                    - enum:
-                      - snapshot
-                      - backupTool
-                    default: snapshot
-                    description: 'backup method, support: snapshot, backupTool.'
+                    description: backup method name to use, that is defined in backupPolicy.
                     type: string
                   pitrEnabled:
                     default: false
@@ -139,11 +130,14 @@ spec:
                       will use the default backupRepo.
                     type: string
                   retentionPeriod:
-                    default: 1d
-                    description: retentionPeriod is a time string ending with the
-                      'd'|'D'|'h'|'H' character to describe how long the Backup should
-                      be retained. if not set, will be retained forever.
-                    pattern: ^\d+[d|D|h|H]$
+                    default: 7d
+                    description: "retentionPeriod determines a duration up to which
+                      the backup should be kept. controller will remove all backups
+                      that are older than the RetentionPeriod. For example, RetentionPeriod
+                      of `30d` will keep only the backups of last 30 days. Sample
+                      duration format: - years: \t2y - months: \t6mo - days: \t\t30d
+                      - hours: \t12h - minutes: \t30m You can also combine the above
+                      durations. For example: 30d12h30m"
                     type: string
                   startingDeadlineMinutes:
                     description: startingDeadlineMinutes defines the deadline in minutes
@@ -153,8 +147,6 @@ spec:
                     maximum: 1440
                     minimum: 0
                     type: integer
-                required:
-                - method
                 type: object
               clusterDefinitionRef:
                 description: Cluster referencing ClusterDefinition name. This is an
@@ -242,6 +234,9 @@ spec:
                       maxLength: 22
                       pattern: ^[a-z]([a-z0-9\-]*[a-z0-9])?$
                       type: string
+                      x-kubernetes-validations:
+                      - message: componentDefRef is immutable
+                        rule: self == oldSelf
                     enabledLogs:
                       description: enabledLogs indicates which log file takes effect
                         in the database cluster. element is the log type which is
@@ -304,6 +299,9 @@ spec:
                       maxLength: 22
                       pattern: ^[a-z]([a-z0-9\-]*[a-z0-9])?$
                       type: string
+                      x-kubernetes-validations:
+                      - message: name is immutable
+                        rule: self == oldSelf
                     noCreatePDB:
                       default: false
                       description: noCreatePDB defines the PodDisruptionBudget creation
@@ -362,8 +360,8 @@ spec:
                           description: 'Requests describes the minimum amount of compute
                             resources required. If Requests is omitted for a container,
                             it defaults to Limits if that is explicitly specified,
-                            otherwise to an implementation-defined value. More info:
-                            https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/'
+                            otherwise to an implementation-defined value. Requests
+                            cannot exceed Limits. More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/'
                           type: object
                       type: object
                       x-kubernetes-preserve-unknown-fields: true
@@ -371,6 +369,72 @@ spec:
                       description: serviceAccountName is the name of the ServiceAccount
                         that running component depends on.
                       type: string
+                    serviceRefs:
+                      description: 'serviceRefs define service references for the
+                        current component. Based on the referenced services, they
+                        can be categorized into two types: Service provided by external
+                        sources: These services are provided by external sources and
+                        are not managed by KubeBlocks. They can be Kubernetes-based
+                        or non-Kubernetes services. For external services, you need
+                        to provide an additional ServiceDescriptor object to establish
+                        the service binding. Service provided by other KubeBlocks
+                        clusters: These services are provided by other KubeBlocks
+                        clusters. You can bind to these services by specifying the
+                        name of the hosting cluster. Each type of service reference
+                        requires specific configurations and bindings to establish
+                        the connection and interaction with the respective services.
+                        It should be noted that the ServiceRef has cluster-level semantic
+                        consistency, meaning that within the same Cluster, service
+                        references with the same ServiceRef.Name are considered to
+                        be the same service. It is only allowed to bind to the same
+                        Cluster or ServiceDescriptor.'
+                      items:
+                        properties:
+                          cluster:
+                            description: 'When referencing a service provided by other
+                              KubeBlocks cluster, you need to provide the name of
+                              the Cluster being referenced. By default, when other
+                              KubeBlocks Cluster are referenced, the ClusterDefinition.spec.connectionCredential
+                              secret corresponding to the referenced Cluster will
+                              be used to bind to the current component. Currently,
+                              if a KubeBlocks cluster is to be referenced, the connection
+                              credential secret should include and correspond to the
+                              following fields: endpoint, port, username, and password.
+                              Under this referencing approach, the ServiceKind and
+                              ServiceVersion of service reference declaration defined
+                              in the ClusterDefinition will not be validated. If both
+                              Cluster and ServiceDescriptor are specified, the Cluster
+                              takes precedence.'
+                            type: string
+                          name:
+                            description: name of the service reference declaration.
+                              references the serviceRefDeclaration name defined in
+                              clusterDefinition.componentDefs[*].serviceRefDeclarations[*].name
+                            type: string
+                          namespace:
+                            description: namespace defines the namespace of the referenced
+                              Cluster or the namespace of the referenced ServiceDescriptor
+                              object. If not set, the referenced Cluster and ServiceDescriptor
+                              will be searched in the namespace of the current cluster
+                              by default.
+                            type: string
+                          serviceDescriptor:
+                            description: serviceDescriptor defines the service descriptor
+                              of the service provided by external sources. When referencing
+                              a service provided by external sources, you need to
+                              provide the ServiceDescriptor object name to establish
+                              the service binding. And serviceDescriptor is the name
+                              of the ServiceDescriptor object, furthermore, the ServiceDescriptor.spec.serviceKind
+                              and ServiceDescriptor.spec.serviceVersion should match
+                              clusterDefinition.componentDefs[*].serviceRefDeclarations[*].serviceRefDeclarationSpecs[*].serviceKind
+                              and the regular expression defines in clusterDefinition.componentDefs[*].serviceRefDeclarations[*].serviceRefDeclarationSpecs[*].serviceVersion.
+                              If both Cluster and ServiceDescriptor are specified,
+                              the Cluster takes precedence.
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      type: array
                     services:
                       description: Services expose endpoints that can be accessed
                         by clients.
@@ -485,6 +549,228 @@ spec:
                         type: object
                       type: array
                       x-kubernetes-preserve-unknown-fields: true
+                    userResourceRefs:
+                      description: userResourceRefs defines the user-defined volumes.
+                      properties:
+                        configMapRefs:
+                          description: configMapRefs defines the user-defined configmaps.
+                          items:
+                            properties:
+                              asVolumeFrom:
+                                description: asVolumeFrom defines the list of containers
+                                  where volumeMounts will be injected into.
+                                items:
+                                  type: string
+                                type: array
+                                x-kubernetes-list-type: set
+                              configMap:
+                                description: configMap defines the configmap volume
+                                  source.
+                                properties:
+                                  defaultMode:
+                                    description: 'defaultMode is optional: mode bits
+                                      used to set permissions on created files by
+                                      default. Must be an octal value between 0000
+                                      and 0777 or a decimal value between 0 and 511.
+                                      YAML accepts both octal and decimal values,
+                                      JSON requires decimal values for mode bits.
+                                      Defaults to 0644. Directories within the path
+                                      are not affected by this setting. This might
+                                      be in conflict with other options that affect
+                                      the file mode, like fsGroup, and the result
+                                      can be other mode bits set.'
+                                    format: int32
+                                    type: integer
+                                  items:
+                                    description: items if unspecified, each key-value
+                                      pair in the Data field of the referenced ConfigMap
+                                      will be projected into the volume as a file
+                                      whose name is the key and content is the value.
+                                      If specified, the listed keys will be projected
+                                      into the specified paths, and unlisted keys
+                                      will not be present. If a key is specified which
+                                      is not present in the ConfigMap, the volume
+                                      setup will error unless it is marked optional.
+                                      Paths must be relative and may not contain the
+                                      '..' path or start with '..'.
+                                    items:
+                                      description: Maps a string key to a path within
+                                        a volume.
+                                      properties:
+                                        key:
+                                          description: key is the key to project.
+                                          type: string
+                                        mode:
+                                          description: 'mode is Optional: mode bits
+                                            used to set permissions on this file.
+                                            Must be an octal value between 0000 and
+                                            0777 or a decimal value between 0 and
+                                            511. YAML accepts both octal and decimal
+                                            values, JSON requires decimal values for
+                                            mode bits. If not specified, the volume
+                                            defaultMode will be used. This might be
+                                            in conflict with other options that affect
+                                            the file mode, like fsGroup, and the result
+                                            can be other mode bits set.'
+                                          format: int32
+                                          type: integer
+                                        path:
+                                          description: path is the relative path of
+                                            the file to map the key to. May not be
+                                            an absolute path. May not contain the
+                                            path element '..'. May not start with
+                                            the string '..'.
+                                          type: string
+                                      required:
+                                      - key
+                                      - path
+                                      type: object
+                                    type: array
+                                  name:
+                                    description: 'Name of the referent. More info:
+                                      https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                      TODO: Add other useful fields. apiVersion, kind,
+                                      uid?'
+                                    type: string
+                                  optional:
+                                    description: optional specify whether the ConfigMap
+                                      or its keys must be defined
+                                    type: boolean
+                                type: object
+                                x-kubernetes-map-type: atomic
+                              mountPoint:
+                                description: mountPath is the path at which to mount
+                                  the volume.
+                                maxLength: 256
+                                pattern: ^/[a-z]([a-z0-9\-]*[a-z0-9])?$
+                                type: string
+                              name:
+                                description: name is the name of the referenced the
+                                  Configmap/Secret object.
+                                maxLength: 63
+                                pattern: ^[a-z0-9]([a-z0-9\.\-]*[a-z0-9])?$
+                                type: string
+                              subPath:
+                                description: subPath is a relative file path within
+                                  the volume to mount.
+                                type: string
+                            required:
+                            - configMap
+                            - mountPoint
+                            - name
+                            type: object
+                          type: array
+                          x-kubernetes-list-map-keys:
+                          - name
+                          x-kubernetes-list-type: map
+                        secretRefs:
+                          description: secretRefs defines the user-defined secrets.
+                          items:
+                            properties:
+                              asVolumeFrom:
+                                description: asVolumeFrom defines the list of containers
+                                  where volumeMounts will be injected into.
+                                items:
+                                  type: string
+                                type: array
+                                x-kubernetes-list-type: set
+                              mountPoint:
+                                description: mountPath is the path at which to mount
+                                  the volume.
+                                maxLength: 256
+                                pattern: ^/[a-z]([a-z0-9\-]*[a-z0-9])?$
+                                type: string
+                              name:
+                                description: name is the name of the referenced the
+                                  Configmap/Secret object.
+                                maxLength: 63
+                                pattern: ^[a-z0-9]([a-z0-9\.\-]*[a-z0-9])?$
+                                type: string
+                              secret:
+                                description: secret defines the secret volume source.
+                                properties:
+                                  defaultMode:
+                                    description: 'defaultMode is Optional: mode bits
+                                      used to set permissions on created files by
+                                      default. Must be an octal value between 0000
+                                      and 0777 or a decimal value between 0 and 511.
+                                      YAML accepts both octal and decimal values,
+                                      JSON requires decimal values for mode bits.
+                                      Defaults to 0644. Directories within the path
+                                      are not affected by this setting. This might
+                                      be in conflict with other options that affect
+                                      the file mode, like fsGroup, and the result
+                                      can be other mode bits set.'
+                                    format: int32
+                                    type: integer
+                                  items:
+                                    description: items If unspecified, each key-value
+                                      pair in the Data field of the referenced Secret
+                                      will be projected into the volume as a file
+                                      whose name is the key and content is the value.
+                                      If specified, the listed keys will be projected
+                                      into the specified paths, and unlisted keys
+                                      will not be present. If a key is specified which
+                                      is not present in the Secret, the volume setup
+                                      will error unless it is marked optional. Paths
+                                      must be relative and may not contain the '..'
+                                      path or start with '..'.
+                                    items:
+                                      description: Maps a string key to a path within
+                                        a volume.
+                                      properties:
+                                        key:
+                                          description: key is the key to project.
+                                          type: string
+                                        mode:
+                                          description: 'mode is Optional: mode bits
+                                            used to set permissions on this file.
+                                            Must be an octal value between 0000 and
+                                            0777 or a decimal value between 0 and
+                                            511. YAML accepts both octal and decimal
+                                            values, JSON requires decimal values for
+                                            mode bits. If not specified, the volume
+                                            defaultMode will be used. This might be
+                                            in conflict with other options that affect
+                                            the file mode, like fsGroup, and the result
+                                            can be other mode bits set.'
+                                          format: int32
+                                          type: integer
+                                        path:
+                                          description: path is the relative path of
+                                            the file to map the key to. May not be
+                                            an absolute path. May not contain the
+                                            path element '..'. May not start with
+                                            the string '..'.
+                                          type: string
+                                      required:
+                                      - key
+                                      - path
+                                      type: object
+                                    type: array
+                                  optional:
+                                    description: optional field specify whether the
+                                      Secret or its keys must be defined
+                                    type: boolean
+                                  secretName:
+                                    description: 'secretName is the name of the secret
+                                      in the pod''s namespace to use. More info: https://kubernetes.io/docs/concepts/storage/volumes#secret'
+                                    type: string
+                                type: object
+                              subPath:
+                                description: subPath is a relative file path within
+                                  the volume to mount.
+                                type: string
+                            required:
+                            - mountPoint
+                            - name
+                            - secret
+                            type: object
+                          type: array
+                          x-kubernetes-list-map-keys:
+                          - name
+                          x-kubernetes-list-type: map
+                      type: object
                     volumeClaimTemplates:
                       description: volumeClaimTemplates information for statefulset.spec.volumeClaimTemplates.
                       items:
@@ -556,14 +842,18 @@ spec:
                                       of compute resources required. If Requests is
                                       omitted for a container, it defaults to Limits
                                       if that is explicitly specified, otherwise to
-                                      an implementation-defined value. More info:
-                                      https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/'
+                                      an implementation-defined value. Requests cannot
+                                      exceed Limits. More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/'
                                     type: object
                                 type: object
                                 x-kubernetes-preserve-unknown-fields: true
                               storageClassName:
                                 description: 'storageClassName is the name of the
                                   StorageClass required by the claim. More info: https://kubernetes.io/docs/concepts/storage/persistent-volumes#class-1.'
+                                type: string
+                              volumeMode:
+                                description: volumeMode defines what type of volume
+                                  is required by the claim.
                                 type: string
                             type: object
                         required:
@@ -575,11 +865,19 @@ spec:
                   - name
                   - replicas
                   type: object
+                maxItems: 128
                 minItems: 1
                 type: array
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+                x-kubernetes-validations:
+                - message: duplicated component
+                  rule: self.all(x, size(self.filter(c, c.name == x.name)) == 1)
+                - message: component can not be added dynamically
+                  rule: self.all(x, oldSelf.exists(y, y.name == x.name))
+                - message: component can not be removed dynamically
+                  rule: oldSelf.all(x, self.exists(y, y.name == x.name))
               monitor:
                 description: monitor specifies the configuration of monitor
                 properties:
@@ -807,6 +1105,48 @@ spec:
                       required:
                       - leader
                       type: object
+                    membersStatus:
+                      description: members' status.
+                      items:
+                        properties:
+                          podName:
+                            default: Unknown
+                            description: PodName pod name.
+                            type: string
+                          role:
+                            properties:
+                              accessMode:
+                                default: ReadWrite
+                                description: AccessMode, what service this member
+                                  capable.
+                                enum:
+                                - None
+                                - Readonly
+                                - ReadWrite
+                                type: string
+                              canVote:
+                                default: true
+                                description: CanVote, whether this member has voting
+                                  rights
+                                type: boolean
+                              isLeader:
+                                default: false
+                                description: IsLeader, whether this member is the
+                                  leader
+                                type: boolean
+                              name:
+                                default: leader
+                                description: Name, role name.
+                                type: string
+                            required:
+                            - accessMode
+                            - name
+                            type: object
+                        required:
+                        - podName
+                        - role
+                        type: object
+                      type: array
                     message:
                       additionalProperties:
                         type: string
@@ -816,24 +1156,27 @@ spec:
                       type: object
                     phase:
                       description: 'phase describes the phase of the component and
-                        the detail information of the phases are as following: Running:
-                        the component is running. [terminal state] Stopped: the component
-                        is stopped, as no running pod. [terminal state] Failed: the
-                        component is unavailable, i.e. all pods are not ready for
-                        Stateless/Stateful component and Leader/Primary pod is not
-                        ready for Consensus/Replication component. [terminal state]
-                        Abnormal: the component is running but part of its pods are
-                        not ready. Leader/Primary pod is ready for Consensus/Replication
-                        component. [terminal state] Creating: the component has entered
-                        creating process. Updating: the component has entered updating
-                        process, triggered by Spec. updated.'
+                        the detail information of the phases are as following: Creating:
+                        `Creating` is a special `Updating` with previous phase `empty`(means
+                        "") or `Creating`. Running: component replicas > 0 and all
+                        pod specs are latest with a Running state. Updating: component
+                        replicas > 0 and has no failed pods. the component is being
+                        updated. Abnormal: component replicas > 0 but having some
+                        failed pods. the component basically works but in a fragile
+                        state. Failed: component replicas > 0 but having some failed
+                        pods. the component doesn''t work anymore. Stopping: component
+                        replicas = 0 and has terminating pods. Stopped: component
+                        replicas = 0 and all pods have been deleted. Deleting: the
+                        component is being deleted.'
                       enum:
+                      - Creating
                       - Running
+                      - Updating
+                      - Stopping
                       - Stopped
+                      - Deleting
                       - Failed
                       - Abnormal
-                      - Creating
-                      - Updating
                       type: string
                     podsReady:
                       description: podsReady checks if all pods of the component are
@@ -960,21 +1303,28 @@ spec:
                 type: integer
               phase:
                 description: 'phase describes the phase of the Cluster, the detail
-                  information of the phases are as following: Running: cluster is
-                  running, all its components are available. [terminal state] Stopped:
-                  cluster has stopped, all its components are stopped. [terminal state]
-                  Failed: cluster is unavailable. [terminal state] Abnormal: Cluster
-                  is still running, but part of its components are Abnormal/Failed.
-                  [terminal state] Creating: Cluster has entered creating process.
-                  Updating: Cluster has entered updating process, triggered by Spec.
-                  updated.'
+                  information of the phases are as following: Creating: all components
+                  are in `Creating` phase. Running: all components are in `Running`
+                  phase, means the cluster is working well. Updating: all components
+                  are in `Creating`, `Running` or `Updating` phase, and at least one
+                  component is in `Creating` or `Updating` phase, means the cluster
+                  is doing an update. Stopping: at least one component is in `Stopping`
+                  phase, means the cluster is in a stop progress. Stopped: all components
+                  are in ''Stopped` phase, means the cluster has stopped and didn''t
+                  provide any function anymore. Failed: all components are in `Failed`
+                  phase, means the cluster is unavailable. Abnormal: some components
+                  are in `Failed` or `Abnormal` phase, means the cluster in a fragile
+                  state. troubleshoot need to be done. Deleting: the cluster is being
+                  deleted.'
                 enum:
+                - Creating
                 - Running
+                - Updating
+                - Stopping
                 - Stopped
+                - Deleting
                 - Failed
                 - Abnormal
-                - Creating
-                - Updating
                 type: string
             type: object
         type: object

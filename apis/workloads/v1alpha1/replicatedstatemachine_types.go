@@ -113,6 +113,10 @@ type ReplicatedStateMachineSpec struct {
 	// +optional
 	MemberUpdateStrategy *MemberUpdateStrategy `json:"memberUpdateStrategy,omitempty"`
 
+	// Paused indicates that the rsm is paused, means the reconciliation of this rsm object will be paused.
+	// +optional
+	Paused bool `json:"paused,omitempty"`
+
 	// Credential used to connect to DB engine
 	// +optional
 	Credential *Credential `json:"credential,omitempty"`
@@ -131,6 +135,10 @@ type ReplicatedStateMachineStatus struct {
 	// +optional
 	ReadyInitReplicas int32 `json:"readyInitReplicas,omitempty"`
 
+	// CurrentGeneration, if not empty, indicates the version of the RSM used to generate the underlying workload
+	// +optional
+	CurrentGeneration int64 `json:"currentGeneration,omitempty"`
+
 	// members' status.
 	// +optional
 	MembersStatus []MemberStatus `json:"membersStatus,omitempty"`
@@ -145,7 +153,7 @@ type ReplicatedStateMachineStatus struct {
 // +kubebuilder:printcolumn:name="REPLICAS",type="string",JSONPath=".status.replicas",description="total replicas."
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp"
 
-// ReplicatedStateMachine is the Schema for the replicatedstatemachines API
+// ReplicatedStateMachine is the Schema for the replicatedstatemachines API.
 type ReplicatedStateMachine struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -206,17 +214,37 @@ const (
 	ParallelUpdateStrategy           MemberUpdateStrategy = "Parallel"
 )
 
+// RoleUpdateMechanism defines the way how pod role label being updated.
+// +enum
+type RoleUpdateMechanism string
+
+const (
+	ReadinessProbeEventUpdate  RoleUpdateMechanism = "ReadinessProbeEventUpdate"
+	DirectAPIServerEventUpdate RoleUpdateMechanism = "DirectAPIServerEventUpdate"
+)
+
 // RoleProbe defines how to observe role
 type RoleProbe struct {
-	// ProbeActions define Actions to be taken in serial.
+	// BuiltinHandler specifies the builtin handler name to use to probe the role of the main container.
+	// current available handlers: mysql, postgres, mongodb, redis, etcd, kafka.
+	// use CustomHandler to define your own role probe function if none of them satisfies the requirement.
+	// +optional
+	BuiltinHandler *string `json:"builtinHandlerName,omitempty"`
+
+	// CustomHandler defines the custom way to do role probe.
+	// if the BuiltinHandler satisfies the requirement, use it instead.
+	//
+	// how the actions defined here works:
+	//
+	// Actions will be taken in serial.
 	// after all actions done, the final output should be a single string of the role name defined in spec.Roles
 	// latest [BusyBox](https://busybox.net/) image will be used if Image not configured
 	// Environment variables can be used in Command:
 	// - v_KB_RSM_LAST_STDOUT stdout from last action, watch 'v_' prefixed
 	// - KB_RSM_USERNAME username part of credential
 	// - KB_RSM_PASSWORD password part of credential
-	// +kubebuilder:validation:Required
-	ProbeActions []Action `json:"probeActions"`
+	// +optional
+	CustomHandler []Action `json:"customHandler,omitempty"`
 
 	// Number of seconds after the container has started before role probe has started.
 	// +kubebuilder:default=0
@@ -251,6 +279,12 @@ type RoleProbe struct {
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	FailureThreshold int32 `json:"failureThreshold,omitempty"`
+
+	// RoleUpdateMechanism specifies the way how pod role label being updated.
+	// +kubebuilder:default=ReadinessProbeEventUpdate
+	// +kubebuilder:validation:Enum={ReadinessProbeEventUpdate, DirectAPIServerEventUpdate}
+	// +optional
+	RoleUpdateMechanism RoleUpdateMechanism `json:"roleUpdateMechanism,omitempty"`
 }
 
 type Credential struct {

@@ -29,12 +29,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
-	"github.com/apecloud/kubeblocks/internal/configuration/core"
-	cfgproto "github.com/apecloud/kubeblocks/internal/configuration/proto"
-	"github.com/apecloud/kubeblocks/internal/configuration/util"
-	"github.com/apecloud/kubeblocks/internal/constant"
-	intctrlutil "github.com/apecloud/kubeblocks/internal/controllerutil"
-	viper "github.com/apecloud/kubeblocks/internal/viperx"
+	workloads "github.com/apecloud/kubeblocks/apis/workloads/v1alpha1"
+	"github.com/apecloud/kubeblocks/pkg/configuration/core"
+	cfgproto "github.com/apecloud/kubeblocks/pkg/configuration/proto"
+	"github.com/apecloud/kubeblocks/pkg/configuration/util"
+	"github.com/apecloud/kubeblocks/pkg/constant"
+	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
+	viper "github.com/apecloud/kubeblocks/pkg/viperx"
 )
 
 // ExecStatus defines running result for Reconfiguring policy (fsm).
@@ -42,7 +43,7 @@ import (
 // ESRetry describes fsm is running.
 // ESFailed describes fsm is failed and exited.
 // ESNotSupport describes fsm does not support the feature.
-// ESAndRetryFailed describes fsm is failed in current state, but can be retried.
+// ESFailedAndRetry describes fsm is failed in current state, but can be retried.
 // +enum
 type ExecStatus string
 
@@ -51,7 +52,7 @@ const (
 	ESRetry          ExecStatus = "Retry"
 	ESFailed         ExecStatus = "Failed"
 	ESNotSupport     ExecStatus = "NotSupport"
-	ESAndRetryFailed ExecStatus = "FailedAndRetry"
+	ESFailedAndRetry ExecStatus = "FailedAndRetry"
 )
 
 type ReturnedStatus struct {
@@ -104,9 +105,10 @@ type reconfigureParams struct {
 
 	// List of StatefulSets using this config template.
 	ComponentUnits []appsv1.StatefulSet
-
 	// List of Deployment using this config template.
 	DeploymentUnits []appsv1.Deployment
+	// List of ReplicatedStateMachine using this config template.
+	RSMList []workloads.ReplicatedStateMachine
 }
 
 var (
@@ -269,18 +271,20 @@ func makeReturnedStatus(status ExecStatus, ops ...func(status *ReturnedStatus)) 
 	return ret
 }
 
-func fromDeploymentObjects(units []appsv1.Deployment) []client.Object {
-	r := make([]client.Object, len(units))
-	for i, unit := range units {
-		r[i] = &unit
+func fromWorkloadObjects(params reconfigureParams) []client.Object {
+	r := make([]client.Object, 0)
+	for _, unit := range params.RSMList {
+		r = append(r, &unit)
 	}
-	return r
-}
-
-func fromStatefulSetObjects(units []appsv1.StatefulSet) []client.Object {
-	r := make([]client.Object, len(units))
-	for i, unit := range units {
-		r[i] = &unit
+	// migrated workload
+	if len(r) != 0 {
+		return r
+	}
+	for _, unit := range params.ComponentUnits {
+		r = append(r, &unit)
+	}
+	for _, unit := range params.DeploymentUnits {
+		r = append(r, &unit)
 	}
 	return r
 }

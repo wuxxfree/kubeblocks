@@ -28,11 +28,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
-	cfgcore "github.com/apecloud/kubeblocks/internal/configuration/core"
-	"github.com/apecloud/kubeblocks/internal/configuration/util"
-	"github.com/apecloud/kubeblocks/internal/constant"
-	podutil "github.com/apecloud/kubeblocks/internal/controllerutil"
-	viper "github.com/apecloud/kubeblocks/internal/viperx"
+	cfgcore "github.com/apecloud/kubeblocks/pkg/configuration/core"
+	"github.com/apecloud/kubeblocks/pkg/configuration/util"
+	"github.com/apecloud/kubeblocks/pkg/constant"
+	podutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
+	viper "github.com/apecloud/kubeblocks/pkg/viperx"
 )
 
 const (
@@ -53,18 +53,17 @@ func init() {
 }
 
 func (r *rollingUpgradePolicy) Upgrade(params reconfigureParams) (ReturnedStatus, error) {
-	var (
-		funcs RollingUpgradeFuncs
-		cType = params.WorkloadType()
-	)
+	var funcs RollingUpgradeFuncs
 
-	switch cType {
+	switch params.WorkloadType() {
 	case appsv1alpha1.Consensus:
 		funcs = GetConsensusRollingUpgradeFuncs()
+	case appsv1alpha1.Replication:
+		funcs = GetReplicationRollingUpgradeFuncs()
 	case appsv1alpha1.Stateful:
 		funcs = GetStatefulSetRollingUpgradeFuncs()
 	default:
-		return makeReturnedStatus(ESNotSupport), cfgcore.MakeError("not supported component workload type[%s]", cType)
+		return makeReturnedStatus(ESNotSupport), cfgcore.MakeError("not supported component workload type[%s]", params.WorkloadType())
 	}
 	return performRollingUpgrade(params, funcs)
 }
@@ -92,7 +91,7 @@ func canPerformUpgrade(pods []corev1.Pod, params reconfigureParams) bool {
 func performRollingUpgrade(params reconfigureParams, funcs RollingUpgradeFuncs) (ReturnedStatus, error) {
 	pods, err := funcs.GetPodsFunc(params)
 	if err != nil {
-		return makeReturnedStatus(ESAndRetryFailed), err
+		return makeReturnedStatus(ESFailedAndRetry), err
 	}
 
 	var (
@@ -123,10 +122,10 @@ func performRollingUpgrade(params reconfigureParams, funcs RollingUpgradeFuncs) 
 			continue
 		}
 		if err := funcs.RestartContainerFunc(&pod, params.Ctx.Ctx, params.ContainerNames, params.ReconfigureClientFactory); err != nil {
-			return makeReturnedStatus(ESAndRetryFailed), err
+			return makeReturnedStatus(ESFailedAndRetry), err
 		}
 		if err := updatePodLabelsWithConfigVersion(&pod, configKey, configVersion, params.Client, params.Ctx.Ctx); err != nil {
-			return makeReturnedStatus(ESAndRetryFailed), err
+			return makeReturnedStatus(ESFailedAndRetry), err
 		}
 	}
 

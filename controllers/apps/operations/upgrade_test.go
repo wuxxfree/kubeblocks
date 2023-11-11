@@ -26,9 +26,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
-	intctrlutil "github.com/apecloud/kubeblocks/internal/controllerutil"
-	"github.com/apecloud/kubeblocks/internal/generics"
-	testapps "github.com/apecloud/kubeblocks/internal/testutil/apps"
+	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
+	"github.com/apecloud/kubeblocks/pkg/generics"
+	testapps "github.com/apecloud/kubeblocks/pkg/testutil/apps"
 )
 
 var _ = Describe("Upgrade OpsRequest", func() {
@@ -78,7 +78,7 @@ var _ = Describe("Upgrade OpsRequest", func() {
 				clusterObject.Name, appsv1alpha1.UpgradeType)
 			ops.Spec.Upgrade = &appsv1alpha1.Upgrade{ClusterVersionRef: newClusterVersionName}
 			opsRes.OpsRequest = testapps.CreateOpsRequest(ctx, testCtx, ops)
-			mockComponentIsOperating(opsRes.Cluster, appsv1alpha1.SpecReconcilingClusterCompPhase,
+			mockComponentIsOperating(opsRes.Cluster, appsv1alpha1.UpdatingClusterCompPhase,
 				consensusComp, statelessComp, statefulComp) // appsv1alpha1.VerticalScalingPhase
 			// TODO: add status condition for VerticalScalingPhase
 

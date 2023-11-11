@@ -39,13 +39,13 @@ kbcli cluster list mongodb-cluster
       ***Example***
 
       ```bash
-      kbcli cluster vscale mongodb-cluster --component-names=mongodb --cpu=500m --memory=500Mi
+      kbcli cluster vscale mongodb-cluster --components=mongodb --cpu=500m --memory=500Mi
       >
       OpsRequest mongodb-cluster-verticalscaling-thglk created successfully, you can view the progress:
              kbcli cluster describe-ops mongodb-cluster-verticalscaling-thglk -n default
       ```
 
-   - `--component-names` describes the component name ready for vertical scaling.
+   - `--components` describes the component name ready for vertical scaling.
    - `--memory` describes the requested and limited size of the component memory.
    - `--cpu` describes the requested and limited size of the component CPU.
 
@@ -71,7 +71,7 @@ kbcli cluster list mongodb-cluster
      namespace: default
    spec:
      clusterDefinitionRef: mongodb
-     clusterVersionRef: mongodb-5.0.14
+     clusterVersionRef: mongodb-5.0
      componentSpecs:
      - name: mongodb
        componentDefRef: mongodb
@@ -93,14 +93,14 @@ kbcli cluster list mongodb-cluster
                storage: 1Gi
      terminationPolicy: Halt
    ```
-  
+
 2. Validate the vertical scaling.
 
     ```bash
     kbcli cluster list mongodb-cluster
     >
     NAME              NAMESPACE   CLUSTER-DEFINITION   VERSION          TERMINATION-POLICY   STATUS    CREATED-TIME                 
-    mongodb-cluster   default     mongodb              mongodb-5.0.14   WipeOut              Running   Apr 26,2023 11:50 UTC+0800  
+    mongodb-cluster   default     mongodb              mongodb-5.0   WipeOut              Running   Apr 26,2023 11:50 UTC+0800  
     ```
 
    - STATUS=VerticalScaling: it means the vertical scaling is in progress.
@@ -112,3 +112,15 @@ kbcli cluster list mongodb-cluster
   To solve the problem, you can check manually to see whether resources are sufficient. If AutoScaling is supported, the system recovers when there are enough resources, otherwise, you can create enough resources and check the result with kubectl describe command.
   
   :::
+
+:::note
+
+Vertical scaling does not synchronize parameters related to CPU and memory and it is required to manually call the opsRequest of configuration to change parameters accordingly. Refer to [Configuration](./../configuration/configuration.md) for instructions.
+
+:::
+
+3. Check whether the corresponding resources change.
+
+    ```bash
+    kbcli cluster describe mongodb-cluster
+    ```

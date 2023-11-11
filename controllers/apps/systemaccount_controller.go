@@ -25,6 +25,7 @@ import (
 	"strings"
 
 	"github.com/go-logr/logr"
+	"github.com/pkg/errors"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -38,14 +39,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
 	opsutil "github.com/apecloud/kubeblocks/controllers/apps/operations/util"
-	"github.com/apecloud/kubeblocks/internal/constant"
-	intctrlutil "github.com/apecloud/kubeblocks/internal/controllerutil"
-	viper "github.com/apecloud/kubeblocks/internal/viperx"
-	lorry "github.com/apecloud/kubeblocks/lorry/client"
+	"github.com/apecloud/kubeblocks/pkg/constant"
+	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
+	lorry "github.com/apecloud/kubeblocks/pkg/lorry/client"
+	viper "github.com/apecloud/kubeblocks/pkg/viperx"
 )
 
 // SystemAccountReconciler reconciles a SystemAccount object.
@@ -292,7 +292,7 @@ func (r *SystemAccountReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&appsv1alpha1.Cluster{}).
 		Owns(&corev1.Secret{}).
-		Watches(&source.Kind{Type: &batchv1.Job{}}, r.jobCompletionHandler()).
+		Watches(&batchv1.Job{}, r.jobCompletionHandler()).
 		Complete(r)
 }
 
@@ -436,17 +436,26 @@ func (r *SystemAccountReconciler) getEngineFacts(reqCtx intctrlutil.RequestCtx, 
 		return appsv1alpha1.KBAccountInvalid, fmt.Errorf("no pod is running for cluster: %s, component %s", key.clusterName, key.componentName)
 	}
 
-	lorryClient, err := lorry.NewClientWithPod(target, key.characterType)
+	lorryClient, err := lorry.NewHTTPClientWithPod(target)
 	if err != nil {
 		return appsv1alpha1.KBAccountInvalid, err
 	}
-	accounts, err := lorryClient.GetSystemAccounts()
+	if intctrlutil.IsNil(lorryClient) {
+		return appsv1alpha1.KBAccountInvalid, errors.New("not lorry service")
+	}
+
+	accounts, err := lorryClient.ListSystemAccounts(reqCtx.Ctx)
 	if err != nil {
 		return appsv1alpha1.KBAccountInvalid, err
 	}
 	accountsID := appsv1alpha1.KBAccountInvalid
 	for _, acc := range accounts {
-		updateFacts(appsv1alpha1.AccountName(acc), &accountsID)
+		accountName, ok := acc["userName"]
+		if !ok {
+			continue
+		}
+
+		updateFacts(appsv1alpha1.AccountName(accountName.(string)), &accountsID)
 	}
 	return accountsID, nil
 }
@@ -469,7 +478,7 @@ func (r *SystemAccountReconciler) jobCompletionHandler() *handler.Funcs {
 	// 2. has completed (either successed or failed)
 	// 3. is under deletion (either by user or by TTL, where deletionTimestamp is set)
 	return &handler.Funcs{
-		UpdateFunc: func(e event.UpdateEvent, q workqueue.RateLimitingInterface) {
+		UpdateFunc: func(ctx context.Context, e event.UpdateEvent, q workqueue.RateLimitingInterface) {
 			var (
 				jobTerminated = false
 				job           *batchv1.Job
@@ -554,6 +563,6 @@ func (r *SystemAccountReconciler) jobCompletionHandler() *handler.Funcs {
 // existsOperations checks if the cluster is doing operations
 func existsOperations(cluster *appsv1alpha1.Cluster) bool {
 	opsRequestMap, _ := opsutil.GetOpsRequestSliceFromCluster(cluster)
-	_, isRestoring := cluster.Annotations[constant.RestoreFromBackUpAnnotationKey]
+	_, isRestoring := cluster.Annotations[constant.RestoreFromBackupAnnotationKey]
 	return len(opsRequestMap) > 0 || isRestoring
 }

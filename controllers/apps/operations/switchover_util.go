@@ -35,9 +35,10 @@ import (
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
 	"github.com/apecloud/kubeblocks/controllers/apps/components"
-	"github.com/apecloud/kubeblocks/internal/constant"
-	intctrlcomputil "github.com/apecloud/kubeblocks/internal/controller/component"
-	intctrlutil "github.com/apecloud/kubeblocks/internal/controllerutil"
+	"github.com/apecloud/kubeblocks/pkg/common"
+	"github.com/apecloud/kubeblocks/pkg/constant"
+	intctrlcomputil "github.com/apecloud/kubeblocks/pkg/controller/component"
+	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
 )
 
 const (
@@ -69,8 +70,8 @@ func needDoSwitchover(ctx context.Context,
 		if err != nil {
 			return false, err
 		}
-		podParent, _ := components.ParseParentNameAndOrdinal(pod.Name)
-		siParent, o := components.ParseParentNameAndOrdinal(switchover.InstanceName)
+		podParent, _ := common.ParseParentNameAndOrdinal(pod.Name)
+		siParent, o := common.ParseParentNameAndOrdinal(switchover.InstanceName)
 		if podParent != siParent || o < 0 || o >= int32(len(podList.Items)) {
 			return false, errors.New("switchover.InstanceName is invalid")
 		}

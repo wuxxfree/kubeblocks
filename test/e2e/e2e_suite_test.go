@@ -37,7 +37,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	viper "github.com/apecloud/kubeblocks/internal/viperx"
+	viper "github.com/apecloud/kubeblocks/pkg/viperx"
 	. "github.com/apecloud/kubeblocks/test/e2e"
 	. "github.com/apecloud/kubeblocks/test/e2e/envcheck"
 	. "github.com/apecloud/kubeblocks/test/e2e/installation"
@@ -55,6 +55,8 @@ var secretID string
 var secretKey string
 var initEnv bool
 var testType string
+var skipCase string
+var configType string
 
 func init() {
 	viper.AutomaticEnv()
@@ -65,6 +67,8 @@ func init() {
 	flag.StringVar(&secretKey, "SECRET_KEY", "", "cloud-provider SECRET_KEY")
 	flag.BoolVar(&initEnv, "INIT_ENV", false, "cloud-provider INIT_ENV")
 	flag.StringVar(&testType, "TEST_TYPE", "", "test type")
+	flag.StringVar(&skipCase, "SKIP_CASE", "", "skip not execute cases")
+	flag.StringVar(&configType, "CONFIG_TYPE", "", "test config")
 }
 
 func TestE2e(t *testing.T) {
@@ -104,7 +108,9 @@ var _ = BeforeSuite(func() {
 	Version = version
 	InitEnv = initEnv
 	TestType = testType
+	ConfigType = configType
 	log.Println("TestType is ：" + TestType)
+	SkipCase = skipCase
 	TestResults = make([]Result, 0)
 	if len(provider) > 0 && len(region) > 0 && len(secretID) > 0 && len(secretKey) > 0 {
 		Provider = provider
@@ -184,7 +190,11 @@ var _ = Describe("e2e test", func() {
 		})
 	}
 
+	var _ = Describe("Configure running e2e information", Config)
+
 	var _ = Describe("KubeBlocks smoke test run", SmokeTest)
+
+	var _ = Describe("Delete e2e config resources", DeleteConfig)
 
 	if initEnv == false {
 		if len(kubeblocks) > 0 {

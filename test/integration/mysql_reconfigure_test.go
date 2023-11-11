@@ -27,13 +27,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
-	"github.com/apecloud/kubeblocks/controllers/apps/components"
-	clitypes "github.com/apecloud/kubeblocks/internal/cli/types"
-	cliutil "github.com/apecloud/kubeblocks/internal/cli/util"
-	"github.com/apecloud/kubeblocks/internal/configuration/core"
-	"github.com/apecloud/kubeblocks/internal/generics"
-	testapps "github.com/apecloud/kubeblocks/internal/testutil/apps"
-	testk8s "github.com/apecloud/kubeblocks/internal/testutil/k8s"
+	"github.com/apecloud/kubeblocks/pkg/common"
+	"github.com/apecloud/kubeblocks/pkg/configuration/core"
+	"github.com/apecloud/kubeblocks/pkg/generics"
+	testapps "github.com/apecloud/kubeblocks/pkg/testutil/apps"
+	testk8s "github.com/apecloud/kubeblocks/pkg/testutil/k8s"
+	"github.com/apecloud/kubeblocks/test/testutils"
 )
 
 var _ = Describe("MySQL Reconfigure function", func() {
@@ -92,7 +91,7 @@ var _ = Describe("MySQL Reconfigure function", func() {
 		opsRequest = testapps.NewOpsRequestObj(randomOpsName, testCtx.DefaultNamespace,
 			clusterName, appsv1alpha1.ReconfiguringType)
 		opsRequest.Spec.Reconfigure = &appsv1alpha1.Reconfigure{
-			Configurations: []appsv1alpha1.Configuration{{
+			Configurations: []appsv1alpha1.ConfigurationItem{{
 				Name: configName,
 				Keys: []appsv1alpha1.ParameterConfig{{
 					Key: configFile,
@@ -130,7 +129,7 @@ var _ = Describe("MySQL Reconfigure function", func() {
 
 		cmObj = &corev1.ConfigMap{}
 		cmName := core.GetComponentCfgName(clusterObj.Name, componentName, tpls[0].Name)
-		err = cliutil.GetResourceObjectFromGVR(clitypes.ConfigmapGVR(), client.ObjectKey{
+		err = testutils.GetResourceObjectFromGVR(testutils.ConfigmapGVR(), client.ObjectKey{
 			Name:      cmName,
 			Namespace: testCtx.DefaultNamespace,
 		}, dynamicClient, cmObj)
@@ -152,7 +151,7 @@ var _ = Describe("MySQL Reconfigure function", func() {
 
 		By("Checking pods' role label")
 		sts := testk8s.ListAndCheckStatefulSet(&testCtx, clusterKey).Items[0]
-		pods, err := components.GetPodListByStatefulSet(testCtx.Ctx, k8sClient, &sts)
+		pods, err := common.GetPodListByStatefulSet(testCtx.Ctx, k8sClient, &sts)
 		Expect(err).To(Succeed())
 		Expect(len(pods)).Should(Equal(3))
 
@@ -184,8 +183,8 @@ var _ = Describe("MySQL Reconfigure function", func() {
 
 		By("Checking Cluster and changed component phase is Reconfiguring")
 		Eventually(testapps.CheckObj(&testCtx, clusterKey, func(g Gomega, cluster *appsv1alpha1.Cluster) {
-			g.Expect(cluster.Status.Phase).To(Equal(appsv1alpha1.SpecReconcilingClusterPhase))                               // appsv1alpha1.ReconfiguringPhase
-			g.Expect(cluster.Status.Components[componentName].Phase).To(Equal(appsv1alpha1.SpecReconcilingClusterCompPhase)) // appsv1alpha1.ReconfiguringPhase
+			g.Expect(cluster.Status.Phase).To(Equal(appsv1alpha1.UpdatingClusterPhase))                               // appsv1alpha1.ReconfiguringPhase
+			g.Expect(cluster.Status.Components[componentName].Phase).To(Equal(appsv1alpha1.UpdatingClusterCompPhase)) // appsv1alpha1.ReconfiguringPhase
 			// TODO: add status condition check
 		})).Should(Succeed())
 

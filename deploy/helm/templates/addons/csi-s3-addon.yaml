@@ -14,18 +14,24 @@ spec:
   type: Helm
 
   helm:
-    {{- include "kubeblocks.addonChartLocationURL" ( dict "name" "csi-s3" "version" (default .Chart.Version .Values.versionOverride) "values" .Values) | indent 4 }}
+    {{- include "kubeblocks.addonChartLocationURL" ( dict "name" "csi-s3" "version" "0.7.0" "values" .Values) | indent 4 }}
     {{- include "kubeblocks.addonChartsImage" . | indent 4 }}
 
     installOptions:
       {{- if hasPrefix "oci://" .Values.addonChartLocationBase }}
-      version: {{ default .Chart.Version .Values.versionOverride }}
+      version: 0.7.0
       {{- end }}
 
     installValues:
       secretRefs:
         - name: {{ include "kubeblocks.fullname" . }}-cloud-provider
           key: csi-s3
+
+      {{- $cloudProvider := (include "kubeblocks.cloudProvider" .) }}
+      {{- if eq $cloudProvider "huaweiCloud" }}
+      setValues:
+        - kubeletPath=/mnt/paas/kubernetes/kubelet
+      {{- end }}
 
     valuesMapping:
       jsonMap:
@@ -45,8 +51,10 @@ spec:
     {{- $autoInstall := (get ( get ( .Values | toYaml | fromYaml ) "csi-s3" ) "enabled") }}
     {{- /* auto install csi-s3 if it's required by backup repos */ -}}
     {{- if .Values.backupRepo.create }}
-      {{- if eq .Values.backupRepo.storageProvider "s3" "oss" "minio" "obs" "cos" "gcs" }}
-        {{- $autoInstall = true }}
+      {{- if eq .Values.backupRepo.accessMethod "Mount" }}
+        {{- if eq .Values.backupRepo.storageProvider "s3" "oss" "minio" "obs" "cos" "gcs" }}
+          {{- $autoInstall = true }}
+        {{- end }}
       {{- end }}
     {{- end }}
     autoInstall: {{ $autoInstall }}

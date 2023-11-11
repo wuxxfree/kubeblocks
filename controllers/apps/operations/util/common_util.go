@@ -27,11 +27,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
-	dataprotectionv1alpha1 "github.com/apecloud/kubeblocks/apis/dataprotection/v1alpha1"
-	intctrlutil "github.com/apecloud/kubeblocks/internal/constant"
+	dpv1alpha1 "github.com/apecloud/kubeblocks/apis/dataprotection/v1alpha1"
+	intctrlutil "github.com/apecloud/kubeblocks/pkg/constant"
 )
 
-func setOpsRequestToCluster(cluster *appsv1alpha1.Cluster, opsRequestSlice []appsv1alpha1.OpsRecorder) {
+func SetOpsRequestToCluster(cluster *appsv1alpha1.Cluster, opsRequestSlice []appsv1alpha1.OpsRecorder) {
 	if cluster.Annotations == nil {
 		cluster.Annotations = map[string]string{}
 	}
@@ -49,7 +49,7 @@ func PatchClusterOpsAnnotations(ctx context.Context,
 	cluster *appsv1alpha1.Cluster,
 	opsRequestSlice []appsv1alpha1.OpsRecorder) error {
 	patch := client.MergeFrom(cluster.DeepCopy())
-	setOpsRequestToCluster(cluster, opsRequestSlice)
+	SetOpsRequestToCluster(cluster, opsRequestSlice)
 	return cli.Patch(ctx, cluster, patch)
 }
 
@@ -58,7 +58,7 @@ func UpdateClusterOpsAnnotations(ctx context.Context,
 	cli client.Client,
 	cluster *appsv1alpha1.Cluster,
 	opsRequestSlice []appsv1alpha1.OpsRecorder) error {
-	setOpsRequestToCluster(cluster, opsRequestSlice)
+	SetOpsRequestToCluster(cluster, opsRequestSlice)
 	return cli.Update(ctx, cluster)
 }
 
@@ -100,7 +100,7 @@ func GetOpsRequestSliceFromCluster(cluster *appsv1alpha1.Cluster) ([]appsv1alpha
 }
 
 // GetOpsRequestFromBackup gets OpsRequest slice from cluster annotations.
-func GetOpsRequestFromBackup(backup *dataprotectionv1alpha1.Backup) *appsv1alpha1.OpsRecorder {
+func GetOpsRequestFromBackup(backup *dpv1alpha1.Backup) *appsv1alpha1.OpsRecorder {
 	var (
 		opsRequestName string
 		opsRequestType string

@@ -135,6 +135,10 @@ type OpsRequestSpec struct {
 	// backupSpec defines how to backup the cluster.
 	// +optional
 	BackupSpec *BackupSpec `json:"backupSpec,omitempty"`
+
+	// restoreSpec defines how to restore the cluster.
+	// +optional
+	RestoreSpec *RestoreSpec `json:"restoreSpec,omitempty"`
 }
 
 // ComponentOps defines the common variables of component scope operations.
@@ -223,7 +227,7 @@ type Reconfigure struct {
 	// +patchStrategy=merge,retainKeys
 	// +listType=map
 	// +listMapKey=name
-	Configurations []Configuration `json:"configurations" patchStrategy:"merge,retainKeys" patchMergeKey:"name"`
+	Configurations []ConfigurationItem `json:"configurations" patchStrategy:"merge,retainKeys" patchMergeKey:"name"`
 
 	// TTL(Time to Live) defines the time period during which changing parameters is valid.
 	// +optional
@@ -241,7 +245,7 @@ type Reconfigure struct {
 	// Selector *metav1.LabelSelector `json:"selector,omitempty"`
 }
 
-type Configuration struct {
+type ConfigurationItem struct {
 	// name is a config template name.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MaxLength=63
@@ -354,6 +358,13 @@ type ScriptSpec struct {
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="forbidden to update spec.scriptSpec.scriptFrom"
 	ScriptFrom *ScriptFrom `json:"scriptFrom,omitempty"`
+	// KubeBlocks, by default, will execute the script on the primary pod, with role=leader.
+	// There are some exceptions, such as Redis, which does not synchronize accounts info between primary and secondary.
+	// In this case, we need to execute the script on all pods, matching the selector.
+	// selector indicates the components on which the script is executed.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="forbidden to update spec.scriptSpec.script.selector"
+	Selector *metav1.LabelSelector `json:"selector,omitempty"`
 }
 
 type BackupSpec struct {
@@ -363,17 +374,54 @@ type BackupSpec struct {
 
 	// Which backupPolicy is applied to perform this backup
 	// +optional
-	BackupPolicyName string `json:"backupPolicyName"`
+	BackupPolicyName string `json:"backupPolicyName,omitempty"`
 
-	// Backup Type. datafile or logfile or snapshot. If not set, datafile is the default type.
-	// +kubebuilder:default=datafile
-	// +kubeBuilder:validation:Enum={datafile,logfile,snapshot}
+	// Backup method name that is defined in backupPolicy.
 	// +optional
-	BackupType string `json:"backupType"`
+	BackupMethod string `json:"backupMethod,omitempty"`
+
+	// deletionPolicy determines whether the backup contents stored in backup repository
+	// should be deleted when the backup custom resource is deleted.
+	// Supported values are "Retain" and "Delete".
+	// "Retain" means that the backup content and its physical snapshot on backup repository are kept.
+	// "Delete" means that the backup content and its physical snapshot on backup repository are deleted.
+	// +kubebuilder:validation:Enum=Delete;Retain
+	// +kubebuilder:validation:Required
+	// +kubebuilder:default=Delete
+	// +optional
+	DeletionPolicy string `json:"deletionPolicy,omitempty"`
+
+	// retentionPeriod determines a duration up to which the backup should be kept.
+	// Controller will remove all backups that are older than the RetentionPeriod.
+	// For example, RetentionPeriod of `30d` will keep only the backups of last 30 days.
+	// Sample duration format:
+	// - years: 	2y
+	// - months: 	6mo
+	// - days: 		30d
+	// - hours: 	12h
+	// - minutes: 	30m
+	// You can also combine the above durations. For example: 30d12h30m.
+	// If not set, the backup will be kept forever.
+	// +optional
+	RetentionPeriod string `json:"retentionPeriod,omitempty"`
 
 	// if backupType is incremental, parentBackupName is required.
 	// +optional
 	ParentBackupName string `json:"parentBackupName,omitempty"`
+}
+
+type RestoreSpec struct {
+	// backupName is the name of the backup.
+	// +kubebuilder:validation:Required
+	BackupName string `json:"backupName"`
+
+	// restoreTime point in time to restore
+	RestoreTimeStr string `json:"restoreTimeStr,omitempty"`
+
+	// the volume claim restore policy, support values: [Serial, Parallel]
+	// +kubebuilder:validation:Enum=Serial;Parallel
+	// +kubebuilder:default=Serial
+	VolumeRestorePolicy string `json:"volumeRestorePolicy,omitempty"`
 }
 
 // ScriptSecret defines the secret to be used to execute the script.
@@ -553,10 +601,10 @@ type ReconfiguringStatus struct {
 	// +patchStrategy=merge,retainKeys
 	// +listType=map
 	// +listMapKey=name
-	ConfigurationStatus []ConfigurationStatus `json:"configurationStatus"`
+	ConfigurationStatus []ConfigurationItemStatus `json:"configurationStatus"`
 }
 
-type ConfigurationStatus struct {
+type ConfigurationItemStatus struct {
 	// name is a config template name.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MaxLength=63
@@ -570,6 +618,10 @@ type ConfigurationStatus struct {
 	// status describes the current state of the reconfiguring state machine.
 	// +optional
 	Status string `json:"status,omitempty"`
+
+	// message describes the details about this operation.
+	// +optional
+	Message string `json:"message,omitempty"`
 
 	// succeedCount describes the number of successful reconfiguring.
 	// +kubebuilder:default=0

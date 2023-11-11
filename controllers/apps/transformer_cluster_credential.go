@@ -23,11 +23,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/apecloud/kubeblocks/internal/controller/builder"
-	"github.com/apecloud/kubeblocks/internal/controller/component"
-	"github.com/apecloud/kubeblocks/internal/controller/graph"
-	ictrltypes "github.com/apecloud/kubeblocks/internal/controller/types"
-	intctrlutil "github.com/apecloud/kubeblocks/internal/controllerutil"
+	"github.com/apecloud/kubeblocks/pkg/controller/component"
+	"github.com/apecloud/kubeblocks/pkg/controller/factory"
+	"github.com/apecloud/kubeblocks/pkg/controller/graph"
+	"github.com/apecloud/kubeblocks/pkg/controller/model"
+	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
 )
 
 // ClusterCredentialTransformer creates the connection credential secret
@@ -36,15 +36,14 @@ type ClusterCredentialTransformer struct{}
 var _ graph.Transformer = &ClusterCredentialTransformer{}
 
 func (c *ClusterCredentialTransformer) Transform(ctx graph.TransformContext, dag *graph.DAG) error {
-	transCtx, _ := ctx.(*ClusterTransformContext)
+	transCtx, _ := ctx.(*clusterTransformContext)
 	cluster := transCtx.Cluster
+	graphCli, _ := transCtx.Client.(model.GraphClient)
 
-	root, err := ictrltypes.FindRootVertex(dag)
-	if err != nil {
-		return err
-	}
-
-	var synthesizedComponent *component.SynthesizedComponent
+	var (
+		synthesizedComponent *component.SynthesizedComponent
+		err                  error
+	)
 	compSpecMap := cluster.Spec.GetDefNameMappingComponents()
 	for _, compDef := range transCtx.ClusterDef.Spec.ComponentDefs {
 		if compDef.Service == nil {
@@ -60,7 +59,7 @@ func (c *ClusterCredentialTransformer) Transform(ctx graph.TransformContext, dag
 				Name: comps[0].Name,
 			}
 		} else {
-			synthesizedComponent, err = component.BuildComponent(reqCtx, nil, cluster, transCtx.ClusterDef, &compDef, nil)
+			synthesizedComponent, err = component.BuildComponent(reqCtx, nil, cluster, transCtx.ClusterDef, &compDef, nil, nil)
 			if err != nil {
 				return err
 			}
@@ -73,12 +72,9 @@ func (c *ClusterCredentialTransformer) Transform(ctx graph.TransformContext, dag
 		}
 	}
 	if synthesizedComponent != nil {
-		secret, err := builder.BuildConnCredential(transCtx.ClusterDef, cluster, synthesizedComponent)
-		if err != nil {
-			return err
-		}
+		secret := factory.BuildConnCredential(transCtx.ClusterDef, cluster, synthesizedComponent)
 		if secret != nil {
-			ictrltypes.LifecycleObjectCreate(dag, secret, root)
+			graphCli.Create(dag, secret)
 		}
 	}
 	return nil

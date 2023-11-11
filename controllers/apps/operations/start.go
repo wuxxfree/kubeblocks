@@ -27,8 +27,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
-	"github.com/apecloud/kubeblocks/internal/constant"
-	intctrlutil "github.com/apecloud/kubeblocks/internal/controllerutil"
+	"github.com/apecloud/kubeblocks/pkg/constant"
+	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
 )
 
 type StartOpsHandler struct{}
@@ -38,7 +38,7 @@ var _ OpsHandler = StartOpsHandler{}
 func init() {
 	stopBehaviour := OpsBehaviour{
 		FromClusterPhases:                  []appsv1alpha1.ClusterPhase{appsv1alpha1.StoppedClusterPhase},
-		ToClusterPhase:                     appsv1alpha1.SpecReconcilingClusterPhase, // appsv1alpha1.StartingPhase,
+		ToClusterPhase:                     appsv1alpha1.UpdatingClusterPhase, // appsv1alpha1.StartingPhase,
 		OpsHandler:                         StartOpsHandler{},
 		ProcessingReasonInClusterCondition: ProcessingReasonStarting,
 	}

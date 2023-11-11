@@ -30,6 +30,9 @@ Manage alert receiver, include add, list and delete receiver.
 BackupRepo command.
 
 * [kbcli backuprepo create](kbcli_backuprepo_create.md)	 - Create a backup repo
+* [kbcli backuprepo describe](kbcli_backuprepo_describe.md)	 - Describe a backup repository.
+* [kbcli backuprepo list](kbcli_backuprepo_list.md)	 - List Backup Repositories.
+* [kbcli backuprepo update](kbcli_backuprepo_update.md)	 - Update a backup repository.
 
 
 ## [bench](kbcli_bench.md)
@@ -80,6 +83,7 @@ Cluster command.
 * [kbcli cluster describe](kbcli_cluster_describe.md)	 - Show details of a specific cluster.
 * [kbcli cluster describe-account](kbcli_cluster_describe-account.md)	 - Describe account roles and related information
 * [kbcli cluster describe-backup](kbcli_cluster_describe-backup.md)	 - Describe a backup.
+* [kbcli cluster describe-backup-policy](kbcli_cluster_describe-backup-policy.md)	 - Describe backup policy
 * [kbcli cluster describe-config](kbcli_cluster_describe-config.md)	 - Show details of a specific reconfiguring.
 * [kbcli cluster describe-ops](kbcli_cluster_describe-ops.md)	 - Show details of a specific OpsRequest.
 * [kbcli cluster diff-config](kbcli_cluster_diff-config.md)	 - Show the difference in parameters between the two submitted OpsRequest.
@@ -117,8 +121,10 @@ Cluster command.
 
 ClusterDefinition command.
 
+* [kbcli clusterdefinition describe](kbcli_clusterdefinition_describe.md)	 - Describe ClusterDefinition.
 * [kbcli clusterdefinition list](kbcli_clusterdefinition_list.md)	 - List ClusterDefinitions.
 * [kbcli clusterdefinition list-components](kbcli_clusterdefinition_list-components.md)	 - List cluster definition components.
+* [kbcli clusterdefinition list-service-reference](kbcli_clusterdefinition_list-service-reference.md)	 - List cluster references declared in a cluster definition.
 
 
 ## [clusterversion](kbcli_clusterversion.md)
@@ -146,6 +152,19 @@ List and open the KubeBlocks dashboards.
 
 * [kbcli dashboard list](kbcli_dashboard_list.md)	 - List all dashboards.
 * [kbcli dashboard open](kbcli_dashboard_open.md)	 - Open one dashboard.
+
+
+## [dataprotection](kbcli_dataprotection.md)
+
+Data protection command.
+
+* [kbcli dataprotection backup](kbcli_dataprotection_backup.md)	 - Create a backup for the cluster.
+* [kbcli dataprotection delete-backup](kbcli_dataprotection_delete-backup.md)	 - Delete a backup.
+* [kbcli dataprotection describe-backup](kbcli_dataprotection_describe-backup.md)	 - Describe a backup
+* [kbcli dataprotection describe-backup-policy](kbcli_dataprotection_describe-backup-policy.md)	 - Describe a backup policy
+* [kbcli dataprotection list-backup-policy](kbcli_dataprotection_list-backup-policy.md)	 - List backup policies
+* [kbcli dataprotection list-backups](kbcli_dataprotection_list-backups.md)	 - List backups.
+* [kbcli dataprotection restore](kbcli_dataprotection_restore.md)	 - Restore a new cluster from backup
 
 
 ## [fault](kbcli_fault.md)

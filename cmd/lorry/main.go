@@ -24,124 +24,101 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
-	dhttp "github.com/dapr/components-contrib/bindings/http"
-	"github.com/dapr/components-contrib/bindings/localstorage"
-	"github.com/dapr/components-contrib/middleware"
-	"github.com/dapr/components-contrib/nameresolution/mdns"
-	bindingsLoader "github.com/dapr/dapr/pkg/components/bindings"
-	configurationLoader "github.com/dapr/dapr/pkg/components/configuration"
-	lockLoader "github.com/dapr/dapr/pkg/components/lock"
-	httpMiddlewareLoader "github.com/dapr/dapr/pkg/components/middleware/http"
-	nrLoader "github.com/dapr/dapr/pkg/components/nameresolution"
-	pubsubLoader "github.com/dapr/dapr/pkg/components/pubsub"
-	secretstoresLoader "github.com/dapr/dapr/pkg/components/secretstores"
-	stateLoader "github.com/dapr/dapr/pkg/components/state"
-	httpMiddleware "github.com/dapr/dapr/pkg/middleware/http"
-	"github.com/dapr/dapr/pkg/runtime"
-	"github.com/dapr/kit/logger"
+	"github.com/pkg/errors"
 	"github.com/spf13/pflag"
 	"go.uber.org/automaxprocs/maxprocs"
+	"go.uber.org/zap"
+	ctrl "sigs.k8s.io/controller-runtime"
+	kzap "sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	"github.com/apecloud/kubeblocks/internal/constant"
-	viper "github.com/apecloud/kubeblocks/internal/viperx"
-	"github.com/apecloud/kubeblocks/lorry/binding/custom"
-	"github.com/apecloud/kubeblocks/lorry/binding/etcd"
-	"github.com/apecloud/kubeblocks/lorry/binding/kafka"
-	"github.com/apecloud/kubeblocks/lorry/binding/mongodb"
-	"github.com/apecloud/kubeblocks/lorry/binding/mysql"
-	"github.com/apecloud/kubeblocks/lorry/binding/polardbx"
-	"github.com/apecloud/kubeblocks/lorry/binding/postgres"
-	"github.com/apecloud/kubeblocks/lorry/binding/redis"
-	"github.com/apecloud/kubeblocks/lorry/highavailability"
-	"github.com/apecloud/kubeblocks/lorry/middleware/http/probe"
-	"github.com/apecloud/kubeblocks/lorry/util"
+	"github.com/apecloud/kubeblocks/pkg/constant"
+	"github.com/apecloud/kubeblocks/pkg/lorry/dcs"
+	"github.com/apecloud/kubeblocks/pkg/lorry/engines/register"
+	"github.com/apecloud/kubeblocks/pkg/lorry/grpcserver"
+	"github.com/apecloud/kubeblocks/pkg/lorry/highavailability"
+	"github.com/apecloud/kubeblocks/pkg/lorry/httpserver"
+	opsregister "github.com/apecloud/kubeblocks/pkg/lorry/operations/register"
+	viper "github.com/apecloud/kubeblocks/pkg/viperx"
 )
 
-var (
-	log        = logger.NewLogger("dapr.runtime")
-	logContrib = logger.NewLogger("dapr.contrib")
-	logHa      = logger.NewLogger("dapr.ha")
-)
+var configDir string
 
 func init() {
 	viper.AutomaticEnv()
-	bindingsLoader.DefaultRegistry.RegisterOutputBinding(mysql.NewMysql, "mysql")
-	bindingsLoader.DefaultRegistry.RegisterOutputBinding(polardbx.NewPolardbx, "polardbx")
-	bindingsLoader.DefaultRegistry.RegisterOutputBinding(etcd.NewEtcd, "etcd")
-	bindingsLoader.DefaultRegistry.RegisterOutputBinding(mongodb.NewMongoDB, "mongodb")
-	bindingsLoader.DefaultRegistry.RegisterOutputBinding(redis.NewRedis, "redis")
-	bindingsLoader.DefaultRegistry.RegisterOutputBinding(postgres.NewPostgres, "postgres")
-	bindingsLoader.DefaultRegistry.RegisterOutputBinding(custom.NewHTTPCustom, "custom")
-	bindingsLoader.DefaultRegistry.RegisterOutputBinding(dhttp.NewHTTP, "http")
-	bindingsLoader.DefaultRegistry.RegisterOutputBinding(localstorage.NewLocalStorage, "localstorage")
-	bindingsLoader.DefaultRegistry.RegisterOutputBinding(kafka.NewKafka, "kafka")
-	nrLoader.DefaultRegistry.RegisterComponent(mdns.NewResolver, "mdns")
-	httpMiddlewareLoader.DefaultRegistry.RegisterComponent(func(log logger.Logger) httpMiddlewareLoader.FactoryMethod {
-		return func(metadata middleware.Metadata) (httpMiddleware.Middleware, error) {
-			return probe.NewProbeMiddleware(log).GetHandler(metadata)
-		}
-	}, "probe")
-
+	pflag.StringVar(&configDir, "config-path", "/config/lorry/components/", "Lorry default config directory for builtin type")
 }
 
 func main() {
-	// set GOMAXPROCS
+	// Set GOMAXPROCS
 	_, _ = maxprocs.Set()
 
-	rt, err := runtime.FromFlags()
-	if err != nil {
-		log.Fatal(err)
+	// Initialize flags
+	opts := kzap.Options{
+		Development: true,
 	}
+	opts.BindFlags(flag.CommandLine)
 	pflag.CommandLine.AddGoFlagSet(flag.CommandLine)
 	pflag.Parse()
-	err = viper.BindPFlags(pflag.CommandLine)
+	err := viper.BindPFlags(pflag.CommandLine)
 	if err != nil {
-		panic(fmt.Errorf("fatal error viper bindPFlags: %v", err))
-	}
-	viper.SetConfigFile(viper.GetString("config")) // path to look for the config file in
-	err = viper.ReadInConfig()                     // Find and read the config file
-	if err != nil {                                // Handle errors reading the config file
-		panic(fmt.Errorf("fatal error config file: %v", err))
+		panic(errors.Wrap(err, "fatal error viper bindPFlags"))
 	}
 
-	secretstoresLoader.DefaultRegistry.Logger = logContrib
-	stateLoader.DefaultRegistry.Logger = logContrib
-	configurationLoader.DefaultRegistry.Logger = logContrib
-	lockLoader.DefaultRegistry.Logger = logContrib
-	pubsubLoader.DefaultRegistry.Logger = logContrib
-	nrLoader.DefaultRegistry.Logger = logContrib
-	bindingsLoader.DefaultRegistry.Logger = logContrib
-	httpMiddlewareLoader.DefaultRegistry.Logger = logContrib
+	// Initialize logger
+	kopts := []kzap.Opts{kzap.UseFlagOptions(&opts)}
+	if strings.EqualFold("debug", viper.GetString("zap-log-level")) {
+		kopts = append(kopts, kzap.RawZapOpts(zap.AddCaller()))
+	}
+	ctrl.SetLogger(kzap.New(kopts...))
 
-	err = rt.Run(
-		runtime.WithSecretStores(secretstoresLoader.DefaultRegistry),
-		runtime.WithStates(stateLoader.DefaultRegistry),
-		runtime.WithConfigurations(configurationLoader.DefaultRegistry),
-		runtime.WithLocks(lockLoader.DefaultRegistry),
-		runtime.WithPubSubs(pubsubLoader.DefaultRegistry),
-		runtime.WithNameResolutions(nrLoader.DefaultRegistry),
-		runtime.WithBindings(bindingsLoader.DefaultRegistry),
-		runtime.WithHTTPMiddlewares(httpMiddlewareLoader.DefaultRegistry),
-	)
+	// Initialize DB Manager
+	err = register.InitDBManager(configDir)
 	if err != nil {
-		log.Fatalf("fatal error from runtime: %s", err)
+		panic(errors.Wrap(err, "DB manager initialize failed"))
 	}
 
-	// ha dependent on dbmanager which is initialized by rt.Run
+	// Initialize DCS (Distributed Control System)
+	err = dcs.InitStore()
+	if err != nil {
+		panic(errors.Wrap(err, "DCS initialize failed"))
+	}
+
+	// Start HA
 	characterType := viper.GetString(constant.KBEnvCharacterType)
+	if viper.IsSet(constant.KBEnvBuiltinHandler) {
+		characterType = viper.GetString(constant.KBEnvBuiltinHandler)
+	}
 	workloadType := viper.GetString(constant.KBEnvWorkloadType)
-	ha := highavailability.NewHa(logHa)
-	if util.IsHAAvailable(characterType, workloadType) {
+	if highavailability.IsHAAvailable(characterType, workloadType) {
+		ha := highavailability.NewHa()
 		if ha != nil {
 			defer ha.ShutdownWithWait()
 			go ha.Start()
 		}
 	}
 
+	// start grpc server for role probe
+	grpcServer, err := grpcserver.NewGRPCServer()
+	if err != nil {
+		panic(fmt.Errorf("fatal error grpcserver create failed: %v", err))
+	}
+	err = grpcServer.StartNonBlocking()
+	if err != nil {
+		panic(fmt.Errorf("fatal error grpcserver serve failed: %v", err))
+	}
+
+	// Start HTTP Server
+	ops := opsregister.Operations()
+	httpServer := httpserver.NewServer(ops)
+	err = httpServer.StartNonBlocking()
+	if err != nil {
+		panic(errors.Wrap(err, "HTTP server initialize failed"))
+	}
+
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, os.Interrupt)
 	<-stop
-	rt.ShutdownWithWait()
 }
