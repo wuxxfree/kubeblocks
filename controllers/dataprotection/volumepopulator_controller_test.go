@@ -111,7 +111,7 @@ var _ = Describe("Volume Populator Controller test", func() {
 			backup := mockBackupForRestore(actionSet.Name, "", mockBackupCompleted, useVolumeSnapshotBackup)
 
 			By("create restore ")
-			restore := testdp.NewRestoreactory(testCtx.DefaultNamespace, testdp.RestoreName).
+			restore := testdp.NewRestoreFactory(testCtx.DefaultNamespace, testdp.RestoreName).
 				SetBackup(backup.Name, testCtx.DefaultNamespace).
 				SetDataSourceRef(testdp.DataVolumeName, testdp.DataVolumeMountPath).
 				Create(&testCtx).GetObject()
@@ -175,7 +175,7 @@ var _ = Describe("Volume Populator Controller test", func() {
 				if claim.Annotations == nil {
 					claim.Annotations = map[string]string{}
 				}
-				claim.Annotations[annSelectedNode] = "test-node"
+				claim.Annotations[AnnSelectedNode] = "test-node"
 			})).Should(Succeed())
 			Eventually(testapps.CheckObj(&testCtx, pvcKey, func(g Gomega, tmpPVC *corev1.PersistentVolumeClaim) {
 				g.Expect(len(tmpPVC.Status.Conditions)).Should(Equal(1))
@@ -190,7 +190,7 @@ var _ = Describe("Volume Populator Controller test", func() {
 
 			By("expect for job created")
 			Eventually(testapps.List(&testCtx, generics.JobSignature,
-				client.MatchingLabels{dprestore.DataProtectionLabelPopulatePVCKey: populatePVCName},
+				client.MatchingLabels{dprestore.DataProtectionPopulatePVCLabelKey: populatePVCName},
 				client.InNamespace(testCtx.DefaultNamespace))).Should(HaveLen(1))
 
 			By("mock to create pv and bind to populate pvc")
@@ -199,13 +199,13 @@ var _ = Describe("Volume Populator Controller test", func() {
 			By("mock job to succeed")
 			jobList := &batchv1.JobList{}
 			Expect(k8sClient.List(ctx, jobList,
-				client.MatchingLabels{dprestore.DataProtectionLabelPopulatePVCKey: getPopulatePVCName(pvc.UID)},
+				client.MatchingLabels{dprestore.DataProtectionPopulatePVCLabelKey: getPopulatePVCName(pvc.UID)},
 				client.InNamespace(testCtx.DefaultNamespace))).Should(Succeed())
 			testdp.ReplaceK8sJobStatus(&testCtx, client.ObjectKeyFromObject(&jobList.Items[0]), batchv1.JobComplete)
 
 			By("expect for pvc has been populated")
 			Eventually(testapps.CheckObj(&testCtx, pvcKey, func(g Gomega, tmpPVC *corev1.PersistentVolumeClaim) {
-				g.Expect(tmpPVC.Status.Conditions[0].Reason).Should(Equal(reasonPopulatingSucceed))
+				g.Expect(tmpPVC.Status.Conditions[0].Reason).Should(Equal(ReasonPopulatingSucceed))
 			})).Should(Succeed())
 
 			Eventually(testapps.CheckObj(&testCtx, client.ObjectKeyFromObject(pv), func(g Gomega, tmpPV *corev1.PersistentVolume) {
@@ -220,7 +220,7 @@ var _ = Describe("Volume Populator Controller test", func() {
 
 			By("expect for resources are cleaned up")
 			Eventually(testapps.List(&testCtx, generics.JobSignature,
-				client.MatchingLabels{dprestore.DataProtectionLabelPopulatePVCKey: populatePVCName},
+				client.MatchingLabels{dprestore.DataProtectionPopulatePVCLabelKey: populatePVCName},
 				client.InNamespace(testCtx.DefaultNamespace))).Should(HaveLen(0))
 			Eventually(testapps.CheckObjExists(&testCtx, types.NamespacedName{Namespace: testCtx.DefaultNamespace,
 				Name: populatePVCName}, populatePVC, false))
@@ -243,7 +243,7 @@ var _ = Describe("Volume Populator Controller test", func() {
 				pvc := initResources(storagev1.VolumeBindingImmediate, false, false)
 				Eventually(testapps.CheckObj(&testCtx, client.ObjectKeyFromObject(pvc), func(g Gomega, tmpPVC *corev1.PersistentVolumeClaim) {
 					g.Expect(len(tmpPVC.Status.Conditions)).Should(Equal(1))
-					g.Expect(tmpPVC.Status.Conditions[0].Reason).Should(Equal(reasonPopulatingFailed))
+					g.Expect(tmpPVC.Status.Conditions[0].Reason).Should(Equal(ReasonPopulatingFailed))
 				})).Should(Succeed())
 
 			})

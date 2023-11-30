@@ -26,7 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
-	"github.com/apecloud/kubeblocks/controllers/apps/components"
+	intctrlcomp "github.com/apecloud/kubeblocks/pkg/controller/component"
 	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
 )
 
@@ -39,11 +39,10 @@ func init() {
 	horizontalScalingBehaviour := OpsBehaviour{
 		// if cluster is Abnormal or Failed, new opsRequest may repair it.
 		// TODO: we should add "force" flag for these opsRequest.
-		FromClusterPhases:                  appsv1alpha1.GetClusterUpRunningPhases(),
-		ToClusterPhase:                     appsv1alpha1.UpdatingClusterPhase,
-		OpsHandler:                         hsHandler,
-		CancelFunc:                         hsHandler.Cancel,
-		ProcessingReasonInClusterCondition: ProcessingReasonHorizontalScaling,
+		FromClusterPhases: appsv1alpha1.GetClusterUpRunningPhases(),
+		ToClusterPhase:    appsv1alpha1.UpdatingClusterPhase,
+		OpsHandler:        hsHandler,
+		CancelFunc:        hsHandler.Cancel,
 	}
 	opsMgr := GetOpsManager()
 	opsMgr.RegisterOps(appsv1alpha1.HorizontalScalingType, horizontalScalingBehaviour)
@@ -127,7 +126,7 @@ func (hs horizontalScalingOpsHandler) getExpectReplicas(opsRequest *appsv1alpha1
 func getCompPodNamesBeforeScaleDownReplicas(reqCtx intctrlutil.RequestCtx,
 	cli client.Client, cluster appsv1alpha1.Cluster, compName string) ([]string, error) {
 	podNames := make([]string, 0)
-	podList, err := components.GetComponentPodList(reqCtx.Ctx, cli, cluster, compName)
+	podList, err := intctrlcomp.GetComponentPodList(reqCtx.Ctx, cli, cluster, compName)
 	if err != nil {
 		return podNames, err
 	}

@@ -260,8 +260,8 @@ func (m *Commands) ConnectCommand(connectInfo *engines.AuthInfo) []string {
 	userPass := m.info.PasswordEnv
 
 	if connectInfo != nil {
-		userName = connectInfo.UserName
-		userPass = connectInfo.UserPasswd
+		userName = engines.AddSingleQuote(connectInfo.UserName)
+		userPass = engines.AddSingleQuote(connectInfo.UserPasswd)
 	}
 
 	// avoid using env variables

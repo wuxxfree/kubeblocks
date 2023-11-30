@@ -1,21 +1,34 @@
+{{- $name:="pulsar" -}}
+{{- $version:="0.7.0" -}}
+{{- $upgrade:= or .Release.IsInstall (and .Release.IsUpgrade .Values.upgradeAddons) }}
+{{- $existingAddon := lookup "extensions.kubeblocks.io/v1alpha1" "Addon" "" $name -}}
+{{- if and (not $upgrade) $existingAddon -}}
+{{- $obj := fromYaml (toYaml $existingAddon) -}}
+{{- $metadata := get $obj "metadata" -}}
+{{- $metadata = unset $metadata "managedFields" -}}
+{{- $metadata = unset $metadata "resourceVersion" -}}
+{{- $obj = set $obj "metadata" $metadata -}}
+{{ $obj | toYaml }}
+{{- else -}}
 apiVersion: extensions.kubeblocks.io/v1alpha1
 kind: Addon
 metadata:
-  name: pulsar
+  name: {{ $name }}
   labels:
-    {{- include "kubeblocks.labels" . | nindent 4 }}
-    "kubeblocks.io/provider": community
-  {{- if .Values.keepAddons }}
+    app.kubernetes.io/name: {{ $name }}
+    app.kubernetes.io/version: {{ $version }}
+    addon.kubeblocks.io/provider: community
+    addon.kubeblocks.io/model: streaming
   annotations:
+    addon.kubeblocks.io/kubeblocks-version: '>=0.7.0'
+  {{- if .Values.keepAddons }}
     helm.sh/resource-policy: keep
   {{- end }}
 spec:
   description: "Apache® Pulsar™ is an open-source, distributed messaging and streaming platform built for the cloud."
-
   type: Helm
-
   helm:
-    {{- include "kubeblocks.addonChartLocationURL" ( dict "name" "pulsar" "version" (default .Chart.Version .Values.versionOverride) "values" .Values) | indent 4 }}
+    {{- include "kubeblocks.addonChartLocationURL" ( dict "name" $name "version" $version "values" .Values) | indent 4 }}
     {{- include "kubeblocks.addonChartsImage" . | indent 4 }}
 
     installOptions:
@@ -35,3 +48,4 @@ spec:
 
   defaultInstallValues:
     - enabled: true
+  {{- end -}}

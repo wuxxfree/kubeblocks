@@ -156,10 +156,10 @@ single_thread_memory = 294912
 			},
 		}
 		component = &ctrlcomp.SynthesizedComponent{
-			ClusterDefName: "mysql-three-node-definition",
-			Name:           "replicasets",
-			CompDefName:    "replicasets",
-			Replicas:       5,
+			ClusterDefName:     "mysql-three-node-definition",
+			Name:               "replicasets",
+			ClusterCompDefName: "replicasets",
+			Replicas:           5,
 			VolumeClaimTemplates: []corev1.PersistentVolumeClaimTemplate{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -197,7 +197,7 @@ single_thread_memory = 294912
 						Namespace: "default",
 					},
 				},
-				nil, nil, nil)
+				nil, nil)
 
 			Expect(cfgBuilder.injectBuiltInObjectsAndFunctions(podSpec, cfgTemplate, component, nil)).Should(BeNil())
 
@@ -224,7 +224,7 @@ single_thread_memory = 294912
 						Namespace: "default",
 					},
 				},
-				nil, nil, nil,
+				nil, nil,
 			)
 
 			viper.Set(constant.KubernetesClusterDomainEnv, "test-domain")
@@ -293,7 +293,7 @@ single_thread_memory = 294912
 						Namespace: "default",
 					},
 				},
-				nil, nil, nil,
+				nil, nil,
 			)
 
 			Expect(cfgBuilder.injectBuiltInObjectsAndFunctions(podSpec, cfgTemplate, component, nil)).Should(BeNil())

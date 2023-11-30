@@ -308,6 +308,24 @@ func main() {
 			os.Exit(1)
 		}
 
+		if err = (&appscontrollers.ComponentReconciler{
+			Client:   mgr.GetClient(),
+			Scheme:   mgr.GetScheme(),
+			Recorder: mgr.GetEventRecorderFor("component-controller"),
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "Component")
+			os.Exit(1)
+		}
+
+		if err = (&appscontrollers.ComponentDefinitionReconciler{
+			Client:   mgr.GetClient(),
+			Scheme:   mgr.GetScheme(),
+			Recorder: mgr.GetEventRecorderFor("component-definition-controller"),
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "ComponentDefinition")
+			os.Exit(1)
+		}
+
 		if err = (&appscontrollers.OpsRequestReconciler{
 			Client:   mgr.GetClient(),
 			Scheme:   mgr.GetScheme(),
@@ -372,16 +390,18 @@ func main() {
 		}
 
 		if err = (&appscontrollers.ServiceDescriptorReconciler{
-			Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme(),
+			Client:   mgr.GetClient(),
+			Scheme:   mgr.GetScheme(),
+			Recorder: mgr.GetEventRecorderFor("service-descriptor-controller"),
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "ServiceDescriptor")
 			os.Exit(1)
 		}
 
 		if err = (&appscontrollers.BackupPolicyTemplateReconciler{
-			Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme(),
+			Client:   mgr.GetClient(),
+			Scheme:   mgr.GetScheme(),
+			Recorder: mgr.GetEventRecorderFor("backup-policy-template-controller"),
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "BackupPolicyTemplate")
 			os.Exit(1)
@@ -439,6 +459,16 @@ func main() {
 
 		if err = (&appsv1alpha1.ClusterVersion{}).SetupWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "ClusterVersion")
+			os.Exit(1)
+		}
+
+		if err = (&appsv1alpha1.Component{}).SetupWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "Component")
+			os.Exit(1)
+		}
+
+		if err = (&appsv1alpha1.ComponentDefinition{}).SetupWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "ComponentDefinition")
 			os.Exit(1)
 		}
 

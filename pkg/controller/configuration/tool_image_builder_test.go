@@ -30,7 +30,6 @@ import (
 	"github.com/apecloud/kubeblocks/pkg/constant"
 	"github.com/apecloud/kubeblocks/pkg/controller/component"
 	"github.com/apecloud/kubeblocks/pkg/controller/factory"
-	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
 	viper "github.com/apecloud/kubeblocks/pkg/viperx"
 )
 
@@ -47,7 +46,7 @@ var _ = Describe("ToolsImageBuilderTest", func() {
 	BeforeEach(func() {
 		// Add any setup steps that needs to be executed before each test
 		clusterObj, ClusterDefObj, clusterVersionObj, _ = newAllFieldsClusterObj(nil, nil, false)
-		clusterComponent = newAllFieldsComponent(ClusterDefObj, clusterVersionObj)
+		clusterComponent = newAllFieldsComponent(ClusterDefObj, clusterVersionObj, clusterObj)
 		viper.SetDefault(constant.KBToolsImage, kbToolsImage)
 	})
 
@@ -57,18 +56,14 @@ var _ = Describe("ToolsImageBuilderTest", func() {
 
 	Context("ToolsImageBuilderTest", func() {
 		It("TestScriptSpec", func() {
-			sts, err := factory.BuildSts(intctrlutil.RequestCtx{
-				Ctx: testCtx.Ctx,
-				Log: logger,
-			}, clusterObj, clusterComponent, "for_test_env")
+			rsm, err := factory.BuildRSM(clusterObj, clusterComponent)
 			Expect(err).Should(Succeed())
 
 			cfgManagerParams := &cfgcm.CfgManagerBuildParams{
 				ManagerName:   constant.ConfigSidecarName,
 				CharacterType: clusterComponent.CharacterType,
 				ComponentName: clusterComponent.Name,
-				SecreteName:   component.GenerateConnCredential(clusterObj.Name),
-				EnvConfigName: component.GenerateComponentEnvName(clusterObj.Name, clusterComponent.Name),
+				SecreteName:   constant.GenerateDefaultConnCredential(clusterObj.Name),
 				Image:         viper.GetString(constant.KBToolsImage),
 				Volumes:       make([]corev1.VolumeMount, 0),
 				Cluster:       clusterObj,
@@ -109,10 +104,10 @@ var _ = Describe("ToolsImageBuilderTest", func() {
 					Policy:      appsv1alpha1.NoneMergePolicy,
 				},
 			}
-			Expect(buildConfigToolsContainer(cfgManagerParams, &sts.Spec.Template.Spec, clusterComponent)).Should(Succeed())
+			Expect(buildConfigToolsContainer(cfgManagerParams, &rsm.Spec.Template.Spec, clusterComponent)).Should(Succeed())
 			Expect(4).Should(BeEquivalentTo(len(cfgManagerParams.ToolsContainers)))
 			Expect("test_images").Should(BeEquivalentTo(cfgManagerParams.ToolsContainers[0].Image))
-			Expect(sts.Spec.Template.Spec.Containers[0].Image).Should(BeEquivalentTo(cfgManagerParams.ToolsContainers[1].Image))
+			Expect(rsm.Spec.Template.Spec.Containers[0].Image).Should(BeEquivalentTo(cfgManagerParams.ToolsContainers[1].Image))
 			Expect(kbToolsImage).Should(BeEquivalentTo(cfgManagerParams.ToolsContainers[2].Image))
 			Expect(kbToolsImage).Should(BeEquivalentTo(cfgManagerParams.ToolsContainers[3].Image))
 			Expect(initSecRenderedToolContainerName).Should(BeEquivalentTo(cfgManagerParams.ToolsContainers[3].Name))

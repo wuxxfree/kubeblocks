@@ -23,28 +23,23 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
-
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
 	"github.com/apecloud/kubeblocks/pkg/controller/component"
 	"github.com/apecloud/kubeblocks/pkg/controller/configuration"
+	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
 )
 
 // RenderConfigNScriptFiles generates volumes for PodTemplate, volumeMount for container, rendered configTemplate and scriptTemplate,
 // and generates configManager sidecar for the reconfigure operation.
 func RenderConfigNScriptFiles(resourceCtx *intctrlutil.ResourceCtx,
-	clusterVersion *appsv1alpha1.ClusterVersion,
 	cluster *appsv1alpha1.Cluster,
 	component *component.SynthesizedComponent,
-	compObject client.Object,
 	podSpec *corev1.PodSpec,
 	localObjs []client.Object) error {
 	return configuration.NewConfigReconcileTask(
 		resourceCtx,
 		cluster,
-		clusterVersion,
 		component,
-		compObject,
 		podSpec,
 		localObjs).Reconcile()
 }

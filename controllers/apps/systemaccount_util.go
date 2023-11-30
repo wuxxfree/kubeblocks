@@ -33,6 +33,7 @@ import (
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
 	"github.com/apecloud/kubeblocks/pkg/constant"
 	componetutil "github.com/apecloud/kubeblocks/pkg/controller/component"
+	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
 	viper "github.com/apecloud/kubeblocks/pkg/viperx"
 )
 
@@ -78,11 +79,25 @@ func newCustomizedEngine(execConfig *appsv1alpha1.CmdExecutorConfig, dbcluster *
 }
 
 func replaceEnvsValues(clusterName string, sysAccounts *appsv1alpha1.SystemAccountSpec) {
-	namedValuesMap := componetutil.GetEnvReplacementMapForConnCredential(clusterName)
+	connCredentialPlaceHolderMap := componetutil.GetEnvReplacementMapForConnCredential(clusterName)
+	compConnCredentialPlaceHolderMap := componetutil.GetEnvReplacementMapForConnCredential(clusterName)
+
+	mergeMap := func(map1, map2 map[string]string) map[string]string {
+		mergedMap := make(map[string]string)
+		for k, v := range map1 {
+			mergedMap[k] = v
+		}
+		for k, v := range map2 {
+			mergedMap[k] = v
+		}
+		return mergedMap
+	}
+
 	// replace systemAccounts.cmdExecutorConfig.env[].valueFrom.secretKeyRef.name variables
 	cmdConfig := sysAccounts.CmdExecutorConfig
 	if cmdConfig != nil {
-		cmdConfig.Env = componetutil.ReplaceSecretEnvVars(namedValuesMap, cmdConfig.Env)
+		cmdConfig.Env = componetutil.ReplaceSecretEnvVars(mergeMap(connCredentialPlaceHolderMap, compConnCredentialPlaceHolderMap), cmdConfig.Env)
+		cmdConfig.Env = componetutil.ReplaceSecretEnvVars(mergeMap(connCredentialPlaceHolderMap, compConnCredentialPlaceHolderMap), cmdConfig.Env)
 	}
 
 	accounts := sysAccounts.Accounts
@@ -90,7 +105,7 @@ func replaceEnvsValues(clusterName string, sysAccounts *appsv1alpha1.SystemAccou
 		if acc.ProvisionPolicy.Type == appsv1alpha1.ReferToExisting {
 			// replace systemAccounts.accounts[*].provisionPolicy.secretRef.name variables
 			secretRef := acc.ProvisionPolicy.SecretRef
-			name := componetutil.ReplaceNamedVars(namedValuesMap, secretRef.Name, 1, false)
+			name := componetutil.ReplaceNamedVars(mergeMap(connCredentialPlaceHolderMap, compConnCredentialPlaceHolderMap), secretRef.Name, 1, false)
 			if name != secretRef.Name {
 				secretRef.Name = name
 			}
@@ -125,6 +140,17 @@ func renderJob(jobName string, engine *customizedEngine, key componentUniqueKey,
 		envs = append(envs, engine.getEnvs()...)
 	}
 
+	jobContainer := corev1.Container{
+		Name:            jobName,
+		Image:           engine.getImage(),
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		Command:         engine.getCommand(),
+		Args:            engine.getArgs(),
+		Env:             envs,
+	}
+
+	intctrlutil.InjectZeroResourcesLimitsIfEmpty(&jobContainer)
+
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: key.namespace,
@@ -137,16 +163,7 @@ func renderJob(jobName string, engine *customizedEngine, key componentUniqueKey,
 					Name:      jobName},
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyNever,
-					Containers: []corev1.Container{
-						{
-							Name:            jobName,
-							Image:           engine.getImage(),
-							ImagePullPolicy: corev1.PullIfNotPresent,
-							Command:         engine.getCommand(),
-							Args:            engine.getArgs(),
-							Env:             envs,
-						},
-					},
+					Containers:    []corev1.Container{jobContainer},
 				},
 			},
 		},
@@ -177,7 +194,7 @@ func renderSecret(key componentUniqueKey, username string, labels client.Matchin
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace:  key.namespace,
-			Name:       strings.Join([]string{key.clusterName, key.componentName, username}, "-"),
+			Name:       constant.GenerateAccountSecretName(key.clusterName, key.componentName, username),
 			Labels:     labels,
 			Finalizers: []string{constant.DBClusterFinalizerName},
 		},

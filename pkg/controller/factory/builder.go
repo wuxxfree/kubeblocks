@@ -31,7 +31,6 @@ import (
 
 	"github.com/google/uuid"
 	snapshotv1 "github.com/kubernetes-csi/external-snapshotter/client/v6/apis/volumesnapshot/v1"
-	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -42,7 +41,6 @@ import (
 	appsv1alpha1 "github.com/apecloud/kubeblocks/apis/apps/v1alpha1"
 	dpv1alpha1 "github.com/apecloud/kubeblocks/apis/dataprotection/v1alpha1"
 	workloads "github.com/apecloud/kubeblocks/apis/workloads/v1alpha1"
-	"github.com/apecloud/kubeblocks/pkg/common"
 	cfgcm "github.com/apecloud/kubeblocks/pkg/configuration/config_manager"
 	"github.com/apecloud/kubeblocks/pkg/constant"
 	"github.com/apecloud/kubeblocks/pkg/controller/builder"
@@ -61,17 +59,99 @@ const (
 	MountPath  = "/etc/pki/tls"
 )
 
-func processContainersInjection(reqCtx intctrlutil.RequestCtx,
-	cluster *appsv1alpha1.Cluster,
+// BuildRSM builds a ReplicatedStateMachine object based on Cluster, SynthesizedComponent.
+func BuildRSM(cluster *appsv1alpha1.Cluster, synthesizeComp *component.SynthesizedComponent) (*workloads.ReplicatedStateMachine, error) {
+	commonLabels := constant.GetKBWellKnownLabelsWithCompDef(synthesizeComp.CompDefName, cluster.Name, synthesizeComp.Name)
+
+	// TODO(xingran): Need to review how to set pod labels based on the new ComponentDefinition API. workloadType label has been removed.
+	podBuilder := builder.NewPodBuilder("", "").
+		AddLabelsInMap(commonLabels).
+		AddLabelsInMap(constant.GetComponentDefLabel(synthesizeComp.CompDefName)).
+		AddLabelsInMap(constant.GetAppVersionLabel(synthesizeComp.CompDefName))
+
+	template := corev1.PodTemplateSpec{
+		ObjectMeta: podBuilder.GetObject().ObjectMeta,
+		Spec:       *synthesizeComp.PodSpec.DeepCopy(),
+	}
+
+	monitorAnnotations := getMonitorAnnotations(synthesizeComp)
+	rsmName := constant.GenerateRSMNamePattern(cluster.Name, synthesizeComp.Name)
+	rsmBuilder := builder.NewReplicatedStateMachineBuilder(cluster.Namespace, rsmName).
+		AddAnnotations(constant.KubeBlocksGenerationKey, strconv.FormatInt(cluster.Generation, 10)).
+		AddAnnotationsInMap(monitorAnnotations).
+		AddLabelsInMap(commonLabels).
+		AddLabelsInMap(constant.GetComponentDefLabel(synthesizeComp.CompDefName)).
+		AddMatchLabelsInMap(commonLabels).
+		SetServiceName(constant.GenerateRSMServiceNamePattern(rsmName)).
+		SetReplicas(synthesizeComp.Replicas).
+		SetTemplate(template)
+
+	var vcts []corev1.PersistentVolumeClaim
+	for _, vct := range synthesizeComp.VolumeClaimTemplates {
+		vcts = append(vcts, vctToPVC(vct))
+	}
+	rsmBuilder.SetVolumeClaimTemplates(vcts...)
+
+	// convert componentDef attributes to rsm attributes. including service, credential, roles, roleProbe, membershipReconfiguration, memberUpdateStrategy, etc.
+	convertedRSM, err := component.BuildRSMFrom(cluster, synthesizeComp, rsmBuilder.GetObject())
+	if err != nil {
+		return nil, err
+	}
+
+	// update sts.spec.volumeClaimTemplates[].metadata.labels
+	// TODO(xingran): synthesizeComp.VolumeTypes has been removed, and the following code needs to be refactored.
+	if len(convertedRSM.Spec.VolumeClaimTemplates) > 0 && len(convertedRSM.GetLabels()) > 0 {
+		for index, vct := range convertedRSM.Spec.VolumeClaimTemplates {
+			BuildPersistentVolumeClaimLabels(synthesizeComp, &vct, vct.Name)
+			convertedRSM.Spec.VolumeClaimTemplates[index] = vct
+		}
+	}
+
+	if err := processContainersInjection(cluster, synthesizeComp, &convertedRSM.Spec.Template.Spec); err != nil {
+		return nil, err
+	}
+
+	return convertedRSM, nil
+}
+
+func vctToPVC(vct corev1.PersistentVolumeClaimTemplate) corev1.PersistentVolumeClaim {
+	return corev1.PersistentVolumeClaim{
+		ObjectMeta: vct.ObjectMeta,
+		Spec:       vct.Spec,
+	}
+}
+
+// getMonitorAnnotations returns the annotations for the monitor.
+func getMonitorAnnotations(synthesizeComp *component.SynthesizedComponent) map[string]string {
+	annotations := make(map[string]string, 0)
+	falseStr := "false"
+	trueStr := "true"
+	switch {
+	case !synthesizeComp.Monitor.Enable:
+		annotations["monitor.kubeblocks.io/scrape"] = falseStr
+		annotations["monitor.kubeblocks.io/agamotto"] = falseStr
+	case synthesizeComp.Monitor.BuiltIn:
+		annotations["monitor.kubeblocks.io/scrape"] = falseStr
+		annotations["monitor.kubeblocks.io/agamotto"] = trueStr
+	default:
+		annotations["monitor.kubeblocks.io/scrape"] = trueStr
+		annotations["monitor.kubeblocks.io/path"] = synthesizeComp.Monitor.ScrapePath
+		annotations["monitor.kubeblocks.io/port"] = strconv.Itoa(int(synthesizeComp.Monitor.ScrapePort))
+		annotations["monitor.kubeblocks.io/scheme"] = "http"
+		annotations["monitor.kubeblocks.io/agamotto"] = falseStr
+	}
+	return rsm.AddAnnotationScope(rsm.HeadlessServiceScope, annotations)
+}
+
+func processContainersInjection(cluster *appsv1alpha1.Cluster,
 	component *component.SynthesizedComponent,
-	envConfigName string,
 	podSpec *corev1.PodSpec) error {
 	for _, cc := range []*[]corev1.Container{
 		&podSpec.Containers,
 		&podSpec.InitContainers,
 	} {
 		for i := range *cc {
-			if err := injectEnvs(cluster, component, envConfigName, &(*cc)[i]); err != nil {
+			if err := injectEnvs(cluster, component, &(*cc)[i]); err != nil {
 				return err
 			}
 			intctrlutil.InjectZeroResourcesLimitsIfEmpty(&(*cc)[i])
@@ -80,7 +160,7 @@ func processContainersInjection(reqCtx intctrlutil.RequestCtx,
 	return nil
 }
 
-func injectEnvs(cluster *appsv1alpha1.Cluster, component *component.SynthesizedComponent, envConfigName string, c *corev1.Container) error {
+func injectEnvs(cluster *appsv1alpha1.Cluster, component *component.SynthesizedComponent, c *corev1.Container) error {
 	// can not use map, it is unordered
 	envFieldPathSlice := []struct {
 		name      string
@@ -128,7 +208,7 @@ func injectEnvs(cluster *appsv1alpha1.Cluster, component *component.SynthesizedC
 			"$(KB_CLUSTER_COMP_NAME)", "$(KB_NAMESPACE)")},
 	}...)
 
-	if component.TLS {
+	if component.TLSConfig != nil && component.TLSConfig.Enable {
 		toInjectEnvs = append(toInjectEnvs, []corev1.EnvVar{
 			{Name: "KB_TLS_CERT_PATH", Value: MountPath},
 			{Name: "KB_TLS_CA_FILE", Value: CAName},
@@ -158,22 +238,19 @@ func injectEnvs(cluster *appsv1alpha1.Cluster, component *component.SynthesizedC
 		}
 	}
 
+	// build env from componentRefEnv
+	if component.ComponentRefEnvs != nil {
+		for _, env := range component.ComponentRefEnvs {
+			toInjectEnvs = append(toInjectEnvs, *env)
+		}
+	}
+
 	// have injected variables placed at the front of the slice
 	if len(c.Env) == 0 {
 		c.Env = toInjectEnvs
 	} else {
 		c.Env = append(toInjectEnvs, c.Env...)
 	}
-	if envConfigName == "" {
-		return nil
-	}
-	c.EnvFrom = append(c.EnvFrom, corev1.EnvFromSource{
-		ConfigMapRef: &corev1.ConfigMapEnvSource{
-			LocalObjectReference: corev1.LocalObjectReference{
-				Name: envConfigName,
-			},
-		},
-	})
 	return nil
 }
 
@@ -199,405 +276,19 @@ func BuildPersistentVolumeClaimLabels(component *component.SynthesizedComponent,
 	}
 }
 
-func BuildCommonLabels(cluster *appsv1alpha1.Cluster,
-	component *component.SynthesizedComponent) map[string]string {
-	return map[string]string{
-		constant.AppManagedByLabelKey:   constant.AppName,
-		constant.AppNameLabelKey:        component.ClusterDefName,
-		constant.AppInstanceLabelKey:    cluster.Name,
-		constant.KBAppComponentLabelKey: component.Name,
-	}
-}
-
-func vctToPVC(vct corev1.PersistentVolumeClaimTemplate) corev1.PersistentVolumeClaim {
-	return corev1.PersistentVolumeClaim{
-		ObjectMeta: vct.ObjectMeta,
-		Spec:       vct.Spec,
-	}
-}
-
-func BuildSts(reqCtx intctrlutil.RequestCtx, cluster *appsv1alpha1.Cluster,
-	component *component.SynthesizedComponent, envConfigName string) (*appsv1.StatefulSet, error) {
-	commonLabels := BuildCommonLabels(cluster, component)
-	podBuilder := builder.NewPodBuilder("", "").
-		AddLabelsInMap(commonLabels).
-		AddLabels(constant.AppComponentLabelKey, component.CompDefName).
-		AddLabels(constant.WorkloadTypeLabelKey, string(component.WorkloadType))
-	if len(cluster.Spec.ClusterVersionRef) > 0 {
-		podBuilder.AddLabels(constant.AppVersionLabelKey, cluster.Spec.ClusterVersionRef)
-	}
-	template := corev1.PodTemplateSpec{
-		ObjectMeta: podBuilder.GetObject().ObjectMeta,
-		Spec:       *component.PodSpec,
-	}
-	stsBuilder := builder.NewStatefulSetBuilder(cluster.Namespace, cluster.Name+"-"+component.Name).
-		AddLabelsInMap(commonLabels).
-		AddLabels(constant.AppComponentLabelKey, component.CompDefName).
-		AddMatchLabelsInMap(commonLabels).
-		SetServiceName(cluster.Name + "-" + component.Name + "-headless").
-		SetReplicas(component.Replicas).
-		SetTemplate(template)
-
-	var vcts []corev1.PersistentVolumeClaim
-	for _, vct := range component.VolumeClaimTemplates {
-		vcts = append(vcts, vctToPVC(vct))
-	}
-	stsBuilder.SetVolumeClaimTemplates(vcts...)
-
-	if component.StatefulSetWorkload != nil {
-		podManagementPolicy, updateStrategy := component.StatefulSetWorkload.FinalStsUpdateStrategy()
-		stsBuilder.SetPodManagementPolicy(podManagementPolicy).SetUpdateStrategy(updateStrategy)
-	}
-
-	sts := stsBuilder.GetObject()
-
-	// update sts.spec.volumeClaimTemplates[].metadata.labels
-	if len(sts.Spec.VolumeClaimTemplates) > 0 && len(sts.GetLabels()) > 0 {
-		for index, vct := range sts.Spec.VolumeClaimTemplates {
-			BuildPersistentVolumeClaimLabels(component, &vct, vct.Name)
-			sts.Spec.VolumeClaimTemplates[index] = vct
-		}
-	}
-
-	if err := processContainersInjection(reqCtx, cluster, component, envConfigName, &sts.Spec.Template.Spec); err != nil {
-		return nil, err
-	}
-	return sts, nil
-}
-
-func buildWellKnownLabels(clusterDefName, clusterName, componentName string) map[string]string {
-	return map[string]string{
-		constant.AppManagedByLabelKey:   constant.AppName,
-		constant.AppNameLabelKey:        clusterDefName,
-		constant.AppInstanceLabelKey:    clusterName,
-		constant.KBAppComponentLabelKey: componentName,
-	}
-}
-
-func BuildRSM(reqCtx intctrlutil.RequestCtx, cluster *appsv1alpha1.Cluster,
-	component *component.SynthesizedComponent, envConfigName string) (*workloads.ReplicatedStateMachine, error) {
-	commonLabels := buildWellKnownLabels(component.ClusterDefName, cluster.Name, component.Name)
-	addCommonLabels := func(service *corev1.Service) {
-		if service == nil {
-			return
-		}
-		labels := service.Labels
-		if labels == nil {
-			labels = make(map[string]string, 0)
-		}
-		for k, v := range commonLabels {
-			labels[k] = v
-		}
-		labels[constant.AppComponentLabelKey] = component.CompDefName
-		service.Labels = labels
-	}
-
-	podBuilder := builder.NewPodBuilder("", "").
-		AddLabelsInMap(commonLabels).
-		AddLabels(constant.AppComponentLabelKey, component.CompDefName).
-		AddLabels(constant.WorkloadTypeLabelKey, string(component.WorkloadType))
-	if len(cluster.Spec.ClusterVersionRef) > 0 {
-		podBuilder.AddLabels(constant.AppVersionLabelKey, cluster.Spec.ClusterVersionRef)
-	}
-	template := corev1.PodTemplateSpec{
-		ObjectMeta: podBuilder.GetObject().ObjectMeta,
-		Spec:       *component.PodSpec,
-	}
-
-	monitorAnnotations := func() map[string]string {
-		annotations := make(map[string]string, 0)
-		falseStr := "false"
-		trueStr := "true"
-		switch {
-		case !component.Monitor.Enable:
-			annotations["monitor.kubeblocks.io/scrape"] = falseStr
-			annotations["monitor.kubeblocks.io/agamotto"] = falseStr
-		case component.Monitor.BuiltIn:
-			annotations["monitor.kubeblocks.io/scrape"] = falseStr
-			annotations["monitor.kubeblocks.io/agamotto"] = trueStr
-		default:
-			annotations["monitor.kubeblocks.io/scrape"] = trueStr
-			annotations["monitor.kubeblocks.io/path"] = component.Monitor.ScrapePath
-			annotations["monitor.kubeblocks.io/port"] = strconv.Itoa(int(component.Monitor.ScrapePort))
-			annotations["monitor.kubeblocks.io/scheme"] = "http"
-			annotations["monitor.kubeblocks.io/agamotto"] = falseStr
-		}
-		return rsm.AddAnnotationScope(rsm.HeadlessServiceScope, annotations)
-	}()
-	rsmName := fmt.Sprintf("%s-%s", cluster.Name, component.Name)
-	rsmBuilder := builder.NewReplicatedStateMachineBuilder(cluster.Namespace, rsmName).
-		AddAnnotations(constant.KubeBlocksGenerationKey, strconv.FormatInt(cluster.Generation, 10)).
-		AddAnnotationsInMap(monitorAnnotations).
-		AddLabelsInMap(commonLabels).
-		AddLabels(constant.AppComponentLabelKey, component.CompDefName).
-		AddMatchLabelsInMap(commonLabels).
-		SetServiceName(rsmName + "-headless").
-		SetReplicas(component.Replicas).
-		SetTemplate(template)
-
-	var vcts []corev1.PersistentVolumeClaim
-	for _, vct := range component.VolumeClaimTemplates {
-		vcts = append(vcts, vctToPVC(vct))
-	}
-	rsmBuilder.SetVolumeClaimTemplates(vcts...)
-
-	if component.StatefulSetWorkload != nil {
-		podManagementPolicy, updateStrategy := component.StatefulSetWorkload.FinalStsUpdateStrategy()
-		rsmBuilder.SetPodManagementPolicy(podManagementPolicy).SetUpdateStrategy(updateStrategy)
-	}
-
-	service, alternativeServices := separateServices(component.Services)
-	addCommonLabels(service)
-	for i := range alternativeServices {
-		addCommonLabels(&alternativeServices[i])
-	}
-	if service != nil {
-		rsmBuilder.SetService(service)
-	}
-	if len(alternativeServices) == 0 {
-		alternativeServices = nil
-	}
-	alternativeServices = fixService(cluster.Namespace, rsmName, component, alternativeServices...)
-	rsmBuilder.SetAlternativeServices(alternativeServices)
-
-	secretName := fmt.Sprintf("%s-conn-credential", cluster.Name)
-	credential := workloads.Credential{
-		Username: workloads.CredentialVar{
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: secretName,
-					},
-					Key: constant.AccountNameForSecret,
-				},
-			},
-		},
-		Password: workloads.CredentialVar{
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: secretName,
-					},
-					Key: constant.AccountPasswdForSecret,
-				},
-			},
-		},
-	}
-	rsmBuilder.SetCredential(credential)
-
-	roles, roleProbe, membershipReconfiguration, memberUpdateStrategy := buildRoleInfo(component)
-	rsm := rsmBuilder.SetRoles(roles).
-		SetRoleProbe(roleProbe).
-		SetMembershipReconfiguration(membershipReconfiguration).
-		SetMemberUpdateStrategy(memberUpdateStrategy).
-		GetObject()
-
-	// update sts.spec.volumeClaimTemplates[].metadata.labels
-	if len(rsm.Spec.VolumeClaimTemplates) > 0 && len(rsm.GetLabels()) > 0 {
-		for index, vct := range rsm.Spec.VolumeClaimTemplates {
-			BuildPersistentVolumeClaimLabels(component, &vct, vct.Name)
-			rsm.Spec.VolumeClaimTemplates[index] = vct
-		}
-	}
-
-	if err := processContainersInjection(reqCtx, cluster, component, envConfigName, &rsm.Spec.Template.Spec); err != nil {
-		return nil, err
-	}
-	return rsm, nil
-}
-
-func fixService(namespace, prefix string, component *component.SynthesizedComponent, alternativeServices ...corev1.Service) []corev1.Service {
-	leaderName := getLeaderName(component)
-	for i := range alternativeServices {
-		if len(alternativeServices[i].Name) > 0 {
-			alternativeServices[i].Name = prefix + "-" + alternativeServices[i].Name
-		}
-		if len(alternativeServices[i].Namespace) == 0 {
-			alternativeServices[i].Namespace = namespace
-		}
-		if alternativeServices[i].Spec.Type == corev1.ServiceTypeLoadBalancer {
-			alternativeServices[i].Spec.ExternalTrafficPolicy = corev1.ServiceExternalTrafficPolicyTypeLocal
-		}
-		if len(leaderName) > 0 {
-			selector := alternativeServices[i].Spec.Selector
-			if selector == nil {
-				selector = make(map[string]string, 0)
-			}
-			selector[constant.RoleLabelKey] = leaderName
-			alternativeServices[i].Spec.Selector = selector
-		}
-	}
-	return alternativeServices
-}
-
-func getLeaderName(component *component.SynthesizedComponent) string {
-	if component == nil {
-		return ""
-	}
-	switch component.WorkloadType {
-	case appsv1alpha1.Consensus:
-		if component.ConsensusSpec != nil {
-			return component.ConsensusSpec.Leader.Name
-		}
-	case appsv1alpha1.Replication:
-		return constant.Primary
-	}
-	return ""
-}
-
-// separateServices separates 'services' to a main service from cd and alternative services from cluster
-func separateServices(services []corev1.Service) (*corev1.Service, []corev1.Service) {
-	if len(services) == 0 {
-		return nil, nil
-	}
-	// from component.buildComponent (which contains component.Services' building process), the first item should be the main service
-	// TODO(free6om): make two fields in component(i.e. Service and AlternativeServices) after RSM passes all testes.
-	return &services[0], services[1:]
-}
-
-func buildRoleInfo(component *component.SynthesizedComponent) ([]workloads.ReplicaRole, *workloads.RoleProbe, *workloads.MembershipReconfiguration, *workloads.MemberUpdateStrategy) {
-	if component.RSMSpec != nil {
-		return buildRoleInfo2(component)
-	}
-
-	var (
-		roles           []workloads.ReplicaRole
-		probe           *workloads.RoleProbe
-		reconfiguration *workloads.MembershipReconfiguration
-		strategy        *workloads.MemberUpdateStrategy
-	)
-
-	handler := convertCharacterTypeToHandler(component.CharacterType, component.WorkloadType == appsv1alpha1.Consensus)
-
-	if handler != nil && component.Probes != nil && component.Probes.RoleProbe != nil {
-		probe = &workloads.RoleProbe{}
-		probe.BuiltinHandler = (*string)(handler)
-		roleProbe := component.Probes.RoleProbe
-		probe.PeriodSeconds = roleProbe.PeriodSeconds
-		probe.TimeoutSeconds = roleProbe.TimeoutSeconds
-		probe.FailureThreshold = roleProbe.FailureThreshold
-		// set to default value
-		probe.SuccessThreshold = 1
-		probe.RoleUpdateMechanism = workloads.DirectAPIServerEventUpdate
-	}
-
-	reconfiguration = nil
-
-	switch component.WorkloadType {
-	case appsv1alpha1.Consensus:
-		roles, strategy = buildRoleInfoFromConsensus(component.ConsensusSpec)
-	case appsv1alpha1.Replication:
-		roles = buildRoleInfoFromReplication()
-		reconfiguration = nil
-		strgy := workloads.SerialUpdateStrategy
-		strategy = &strgy
-	}
-
-	return roles, probe, reconfiguration, strategy
-}
-
-func buildRoleInfo2(component *component.SynthesizedComponent) ([]workloads.ReplicaRole, *workloads.RoleProbe, *workloads.MembershipReconfiguration, *workloads.MemberUpdateStrategy) {
-	rsmSpec := component.RSMSpec
-	return rsmSpec.Roles, rsmSpec.RoleProbe, rsmSpec.MembershipReconfiguration, rsmSpec.MemberUpdateStrategy
-}
-
-func buildRoleInfoFromReplication() []workloads.ReplicaRole {
-	return []workloads.ReplicaRole{
-		{
-			Name:       constant.Primary,
-			IsLeader:   true,
-			CanVote:    true,
-			AccessMode: workloads.ReadWriteMode,
-		},
-		{
-			Name:       constant.Secondary,
-			IsLeader:   false,
-			CanVote:    true,
-			AccessMode: workloads.ReadonlyMode,
-		},
-	}
-}
-
-func buildRoleInfoFromConsensus(consensusSpec *appsv1alpha1.ConsensusSetSpec) ([]workloads.ReplicaRole, *workloads.MemberUpdateStrategy) {
-	if consensusSpec == nil {
-		return nil, nil
-	}
-
-	var (
-		roles    []workloads.ReplicaRole
-		strategy *workloads.MemberUpdateStrategy
-	)
-
-	roles = append(roles, workloads.ReplicaRole{
-		Name:       consensusSpec.Leader.Name,
-		IsLeader:   true,
-		CanVote:    true,
-		AccessMode: workloads.AccessMode(consensusSpec.Leader.AccessMode),
-	})
-	for _, follower := range consensusSpec.Followers {
-		roles = append(roles, workloads.ReplicaRole{
-			Name:       follower.Name,
-			IsLeader:   false,
-			CanVote:    true,
-			AccessMode: workloads.AccessMode(follower.AccessMode),
-		})
-	}
-	if consensusSpec.Learner != nil {
-		roles = append(roles, workloads.ReplicaRole{
-			Name:       consensusSpec.Learner.Name,
-			IsLeader:   false,
-			CanVote:    false,
-			AccessMode: workloads.AccessMode(consensusSpec.Learner.AccessMode),
-		})
-	}
-
-	strgy := workloads.MemberUpdateStrategy(consensusSpec.UpdateStrategy)
-	strategy = &strgy
-
-	return roles, strategy
-}
-
-func convertCharacterTypeToHandler(characterType string, isConsensus bool) *common.BuiltinHandler {
-	var handler common.BuiltinHandler
-	kind := strings.ToLower(characterType)
-	switch kind {
-	case "mysql": //nolint:goconst
-		if isConsensus {
-			handler = common.WeSQLHandler
-		} else {
-			handler = common.MySQLHandler
-		}
-	case "postgres", "postgresql":
-		handler = common.PostgresHandler
-	case "mongodb":
-
-		handler = common.MongoDBHandler
-	case "etcd":
-		handler = common.ETCDHandler
-	case "redis":
-		handler = common.RedisHandler
-	case "kafka":
-		handler = common.KafkaHandler
-	}
-	if handler != "" {
-		return &handler
-	}
-	return nil
-}
-
 func randomString(length int) string {
 	return rand.String(length)
 }
 
 func BuildConnCredential(clusterDefinition *appsv1alpha1.ClusterDefinition, cluster *appsv1alpha1.Cluster,
 	component *component.SynthesizedComponent) *corev1.Secret {
-	wellKnownLabels := buildWellKnownLabels(clusterDefinition.Name, cluster.Name, "")
+	wellKnownLabels := constant.GetKBWellKnownLabels(clusterDefinition.Name, cluster.Name, "")
 	delete(wellKnownLabels, constant.KBAppComponentLabelKey)
-	credentialBuilder := builder.NewSecretBuilder(cluster.Namespace, fmt.Sprintf("%s-conn-credential", cluster.Name)).
+	credentialBuilder := builder.NewSecretBuilder(cluster.Namespace, constant.GenerateDefaultConnCredential(cluster.Name)).
 		AddLabelsInMap(wellKnownLabels).
 		SetStringData(clusterDefinition.Spec.ConnectionCredential)
 	if len(clusterDefinition.Spec.Type) > 0 {
-		credentialBuilder.AddLabels("apps.kubeblocks.io/cluster-type", clusterDefinition.Spec.Type)
+		credentialBuilder.AddLabelsInMap(constant.GetClusterDefTypeLabel(clusterDefinition.Spec.Type))
 	}
 	connCredential := credentialBuilder.GetObject()
 
@@ -682,9 +373,9 @@ func BuildConnCredential(clusterDefinition *appsv1alpha1.ClusterDefinition, clus
 		"$(UUID_B64)":             uuidB64,
 		"$(UUID_STR_B64)":         uuidStrB64,
 		"$(UUID_HEX)":             uuidHex,
-		"$(SVC_FQDN)":             fmt.Sprintf("%s-%s.%s.svc", cluster.Name, component.Name, cluster.Namespace),
-		"$(KB_CLUSTER_COMP_NAME)": cluster.Name + "-" + component.Name,
-		"$(HEADLESS_SVC_FQDN)":    fmt.Sprintf("%s-%s-headless.%s.svc", cluster.Name, component.Name, cluster.Namespace),
+		"$(SVC_FQDN)":             constant.GenerateDefaultComponentServiceName(cluster.Name, component.Name),
+		"$(KB_CLUSTER_COMP_NAME)": constant.GenerateClusterComponentName(cluster.Name, component.Name),
+		"$(HEADLESS_SVC_FQDN)":    constant.GenerateDefaultComponentHeadlessServiceName(cluster.Name, component.Name),
 	}
 	if len(component.Services) > 0 {
 		for _, p := range component.Services[0].Spec.Ports {
@@ -702,12 +393,37 @@ func BuildConnCredential(clusterDefinition *appsv1alpha1.ClusterDefinition, clus
 	return connCredential
 }
 
-func BuildPDB(cluster *appsv1alpha1.Cluster, component *component.SynthesizedComponent) *policyv1.PodDisruptionBudget {
-	wellKnownLabels := buildWellKnownLabels(component.ClusterDefName, cluster.Name, component.Name)
-	return builder.NewPDBBuilder(cluster.Namespace, fmt.Sprintf("%s-%s", cluster.Name, component.Name)).
-		AddLabelsInMap(wellKnownLabels).
-		AddLabels(constant.AppComponentLabelKey, component.CompDefName).
-		AddSelectorsInMap(wellKnownLabels).
+func BuildConnCredential4Cluster(cluster *appsv1alpha1.Cluster, name string, data map[string][]byte) *corev1.Secret {
+	secretName := constant.GenerateClusterConnCredential(cluster.Name, name)
+	labels := constant.GetClusterWellKnownLabels(cluster.Name)
+	return builder.NewSecretBuilder(cluster.Namespace, secretName).
+		AddLabelsInMap(labels).
+		SetData(data).
+		SetImmutable(true).
+		GetObject()
+}
+
+func BuildConnCredential4Component(comp *component.SynthesizedComponent, name string, data map[string][]byte) *corev1.Secret {
+	secretName := constant.GenerateComponentConnCredential(comp.ClusterName, comp.Name, name)
+	labels := constant.GetComponentWellKnownLabels(comp.ClusterName, comp.Name)
+	return builder.NewSecretBuilder(comp.Namespace, secretName).
+		AddLabelsInMap(labels).
+		SetData(data).
+		SetImmutable(true).
+		GetObject()
+}
+
+func BuildPDB(synthesizedComp *component.SynthesizedComponent) *policyv1.PodDisruptionBudget {
+	var (
+		namespace   = synthesizedComp.Namespace
+		clusterName = synthesizedComp.ClusterName
+		compName    = synthesizedComp.Name
+		labels      = constant.GetKBWellKnownLabels(synthesizedComp.ClusterDefName, clusterName, compName)
+	)
+	return builder.NewPDBBuilder(namespace, constant.GenerateClusterComponentName(clusterName, compName)).
+		AddLabelsInMap(labels).
+		AddLabelsInMap(constant.GetClusterCompDefLabel(synthesizedComp.ClusterCompDefName)).
+		AddSelectorsInMap(labels).
 		GetObject()
 }
 
@@ -716,7 +432,7 @@ func BuildPVC(cluster *appsv1alpha1.Cluster,
 	vct *corev1.PersistentVolumeClaimTemplate,
 	pvcKey types.NamespacedName,
 	snapshotName string) *corev1.PersistentVolumeClaim {
-	wellKnownLabels := buildWellKnownLabels(component.ClusterDefName, cluster.Name, component.Name)
+	wellKnownLabels := constant.GetKBWellKnownLabels(component.ClusterDefName, cluster.Name, component.Name)
 	pvcBuilder := builder.NewPVCBuilder(pvcKey.Namespace, pvcKey.Name).
 		AddLabelsInMap(wellKnownLabels).
 		AddLabels(constant.VolumeClaimTemplateNameLabelKey, vct.Name).
@@ -736,26 +452,6 @@ func BuildPVC(cluster *appsv1alpha1.Cluster,
 	pvc := pvcBuilder.GetObject()
 	BuildPersistentVolumeClaimLabels(component, pvc, vct.Name)
 	return pvc
-}
-
-// BuildEnvConfig builds cluster component context ConfigMap object, which is to be used in workload container's
-// envFrom.configMapRef with name of "$(cluster.metadata.name)-$(component.name)-env" pattern.
-func BuildEnvConfig(cluster *appsv1alpha1.Cluster, component *component.SynthesizedComponent) *corev1.ConfigMap {
-	envData := map[string]string{}
-	// add component envs
-	if component.ComponentRefEnvs != nil {
-		for _, env := range component.ComponentRefEnvs {
-			envData[env.Name] = env.Value
-		}
-	}
-
-	wellKnownLabels := buildWellKnownLabels(component.ClusterDefName, cluster.Name, component.Name)
-	wellKnownLabels[constant.AppComponentLabelKey] = component.CompDefName
-	return builder.NewConfigMapBuilder(cluster.Namespace, fmt.Sprintf("%s-%s-env", cluster.Name, component.Name)).
-		AddLabelsInMap(wellKnownLabels).
-		AddLabels(constant.AppConfigTypeLabelKey, "kubeblocks-env").
-		SetData(envData).
-		GetObject()
 }
 
 func BuildBackup(cluster *appsv1alpha1.Cluster,
@@ -781,8 +477,8 @@ func BuildConfigMapWithTemplate(cluster *appsv1alpha1.Cluster,
 	configs map[string]string,
 	cmName string,
 	configTemplateSpec appsv1alpha1.ComponentTemplateSpec) *corev1.ConfigMap {
-	wellKnownLabels := buildWellKnownLabels(component.ClusterDefName, cluster.Name, component.Name)
-	wellKnownLabels[constant.AppComponentLabelKey] = component.CompDefName
+	wellKnownLabels := constant.GetKBWellKnownLabels(component.ClusterDefName, cluster.Name, component.Name)
+	wellKnownLabels[constant.AppComponentLabelKey] = component.ClusterCompDefName
 	return builder.NewConfigMapBuilder(cluster.Namespace, cmName).
 		AddLabelsInMap(wellKnownLabels).
 		AddLabels(constant.CMConfigurationTypeLabelKey, constant.ConfigInstanceType).
@@ -850,8 +546,7 @@ func BuildCfgManagerContainer(sidecarRenderedParam *cfgcm.CfgManagerBuildParams,
 		})
 	}
 	container := containerBuilder.GetObject()
-
-	if err := injectEnvs(sidecarRenderedParam.Cluster, component, sidecarRenderedParam.EnvConfigName, container); err != nil {
+	if err := injectEnvs(sidecarRenderedParam.Cluster, component, container); err != nil {
 		return nil, err
 	}
 	intctrlutil.InjectZeroResourcesLimitsIfEmpty(container)
@@ -890,12 +585,13 @@ func BuildRestoreJob(cluster *appsv1alpha1.Cluster, synthesizedComponent *compon
 		GetObject()
 	containers := job.Spec.Template.Spec.Containers
 	if len(containers) > 0 {
-		if err := injectEnvs(cluster, synthesizedComponent, "", &containers[0]); err != nil {
+		if err := injectEnvs(cluster, synthesizedComponent, &containers[0]); err != nil {
 			return nil, err
 		}
 		intctrlutil.InjectZeroResourcesLimitsIfEmpty(&containers[0])
 	}
-	tolerations, err := component.BuildTolerations(cluster, cluster.Spec.GetComponentByName(synthesizedComponent.Name))
+	compSpec := cluster.Spec.GetComponentByName(synthesizedComponent.Name)
+	tolerations, err := component.BuildTolerations(cluster, compSpec)
 	if err != nil {
 		return nil, err
 	}
@@ -917,7 +613,7 @@ func BuildCfgManagerToolsContainer(sidecarRenderedParam *cfgcm.CfgManagerBuildPa
 	}
 	for i := range toolContainers {
 		container := &toolContainers[i]
-		if err := injectEnvs(sidecarRenderedParam.Cluster, component, sidecarRenderedParam.EnvConfigName, container); err != nil {
+		if err := injectEnvs(sidecarRenderedParam.Cluster, component, container); err != nil {
 			return nil, err
 		}
 		intctrlutil.InjectZeroResourcesLimitsIfEmpty(container)
@@ -943,18 +639,18 @@ func BuildVolumeSnapshotClass(name string, driver string) *snapshotv1.VolumeSnap
 		GetObject()
 }
 
-func BuildServiceAccount(cluster *appsv1alpha1.Cluster) *corev1.ServiceAccount {
-	wellKnownLabels := buildWellKnownLabels(cluster.Spec.ClusterDefRef, cluster.Name, "")
-	delete(wellKnownLabels, constant.KBAppComponentLabelKey)
-	return builder.NewServiceAccountBuilder(cluster.Namespace, fmt.Sprintf("kb-%s", cluster.Name)).
+func BuildServiceAccount(cluster *appsv1alpha1.Cluster, saName string) *corev1.ServiceAccount {
+	// TODO(component): compName
+	wellKnownLabels := constant.GetKBWellKnownLabels(cluster.Spec.ClusterDefRef, cluster.Name, "")
+	return builder.NewServiceAccountBuilder(cluster.Namespace, saName).
 		AddLabelsInMap(wellKnownLabels).
 		GetObject()
 }
 
-func BuildRoleBinding(cluster *appsv1alpha1.Cluster) *rbacv1.RoleBinding {
-	wellKnownLabels := buildWellKnownLabels(cluster.Spec.ClusterDefRef, cluster.Name, "")
-	delete(wellKnownLabels, constant.KBAppComponentLabelKey)
-	return builder.NewRoleBindingBuilder(cluster.Namespace, fmt.Sprintf("kb-%s", cluster.Name)).
+func BuildRoleBinding(cluster *appsv1alpha1.Cluster, saName string) *rbacv1.RoleBinding {
+	// TODO(component): compName
+	wellKnownLabels := constant.GetKBWellKnownLabels(cluster.Spec.ClusterDefRef, cluster.Name, "")
+	return builder.NewRoleBindingBuilder(cluster.Namespace, saName).
 		AddLabelsInMap(wellKnownLabels).
 		SetRoleRef(rbacv1.RoleRef{
 			APIGroup: rbacv1.GroupName,
@@ -964,15 +660,15 @@ func BuildRoleBinding(cluster *appsv1alpha1.Cluster) *rbacv1.RoleBinding {
 		AddSubjects(rbacv1.Subject{
 			Kind:      rbacv1.ServiceAccountKind,
 			Namespace: cluster.Namespace,
-			Name:      fmt.Sprintf("kb-%s", cluster.Name),
+			Name:      saName,
 		}).
 		GetObject()
 }
 
-func BuildClusterRoleBinding(cluster *appsv1alpha1.Cluster) *rbacv1.ClusterRoleBinding {
-	wellKnownLabels := buildWellKnownLabels(cluster.Spec.ClusterDefRef, cluster.Name, "")
-	delete(wellKnownLabels, constant.KBAppComponentLabelKey)
-	return builder.NewClusterRoleBindingBuilder(cluster.Namespace, fmt.Sprintf("kb-%s", cluster.Name)).
+func BuildClusterRoleBinding(cluster *appsv1alpha1.Cluster, saName string) *rbacv1.ClusterRoleBinding {
+	// TODO(component): compName
+	wellKnownLabels := constant.GetKBWellKnownLabels(cluster.Spec.ClusterDefRef, cluster.Name, "")
+	return builder.NewClusterRoleBindingBuilder(cluster.Namespace, saName).
 		AddLabelsInMap(wellKnownLabels).
 		SetRoleRef(rbacv1.RoleRef{
 			APIGroup: rbacv1.GroupName,
@@ -982,7 +678,7 @@ func BuildClusterRoleBinding(cluster *appsv1alpha1.Cluster) *rbacv1.ClusterRoleB
 		AddSubjects(rbacv1.Subject{
 			Kind:      rbacv1.ServiceAccountKind,
 			Namespace: cluster.Namespace,
-			Name:      fmt.Sprintf("kb-%s", cluster.Name),
+			Name:      saName,
 		}).
 		GetObject()
 }

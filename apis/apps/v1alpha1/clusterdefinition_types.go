@@ -94,17 +94,17 @@ type PasswordConfig struct {
 	// length defines the length of password.
 	// +kubebuilder:validation:Maximum=32
 	// +kubebuilder:validation:Minimum=8
-	// +kubebuilder:default=10
+	// +kubebuilder:default=16
 	// +optional
 	Length int32 `json:"length,omitempty"`
 	//  numDigits defines number of digits.
-	// +kubebuilder:validation:Maximum=20
+	// +kubebuilder:validation:Maximum=8
 	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:default=2
+	// +kubebuilder:default=4
 	// +optional
 	NumDigits int32 `json:"numDigits,omitempty"`
 	// numSymbols defines number of symbols.
-	// +kubebuilder:validation:Maximum=20
+	// +kubebuilder:validation:Maximum=8
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:default=0
 	// +optional

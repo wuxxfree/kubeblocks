@@ -35,7 +35,7 @@ import (
 	viper "github.com/apecloud/kubeblocks/pkg/viperx"
 )
 
-var _ = Describe("probe_utils", func() {
+var _ = Describe("Lorry Utils", func() {
 
 	Context("build probe containers", func() {
 		var container *corev1.Container
@@ -45,7 +45,6 @@ var _ = Describe("probe_utils", func() {
 		var clusterDefProbe *appsv1alpha1.ClusterDefinitionProbe
 
 		BeforeEach(func() {
-			container = buildBasicContainer()
 			probeServiceHTTPPort = 3501
 			probeServiceGRPCPort = 50001
 
@@ -53,6 +52,7 @@ var _ = Describe("probe_utils", func() {
 			clusterDefProbe.PeriodSeconds = 1
 			clusterDefProbe.TimeoutSeconds = 1
 			clusterDefProbe.FailureThreshold = 1
+
 			component = &SynthesizedComponent{}
 			component.CharacterType = "mysql"
 			component.Services = append(component.Services, corev1.Service{
@@ -85,19 +85,32 @@ var _ = Describe("probe_utils", func() {
 				StatusProbe:  &appsv1alpha1.ClusterDefinitionProbe{},
 				RoleProbe:    &appsv1alpha1.ClusterDefinitionProbe{},
 			}
+			component.LifecycleActions = &appsv1alpha1.ComponentLifecycleActions{
+				RoleProbe: &appsv1alpha1.RoleProbeSpec{},
+			}
 			component.PodSpec = &corev1.PodSpec{
 				Containers: []corev1.Container{},
 			}
+
+			container = buildBasicContainer(component)
 		})
 
-		It("should build multiple probe containers", func() {
+		It("build role probe containers", func() {
 			reqCtx := intctrlutil.RequestCtx{
 				Ctx: ctx,
 				Log: logger,
 			}
+			defaultBuiltInHandler := appsv1alpha1.MySQLBuiltinActionHandler
+			component.LifecycleActions = &appsv1alpha1.ComponentLifecycleActions{
+				RoleProbe: &appsv1alpha1.RoleProbeSpec{
+					LifecycleActionHandler: appsv1alpha1.LifecycleActionHandler{
+						BuiltinHandler: &defaultBuiltInHandler,
+					},
+				},
+			}
 			Expect(buildLorryContainers(reqCtx, component)).Should(Succeed())
-			Expect(len(component.PodSpec.Containers) >= 2).Should(BeTrue())
-			Expect(component.PodSpec.Containers[0].Command).ShouldNot(BeEmpty())
+			Expect(component.PodSpec.Containers).Should(HaveLen(1))
+			Expect(component.PodSpec.Containers[0].Name).Should(Equal(constant.RoleProbeContainerName))
 		})
 
 		It("should build role service container", func() {
@@ -105,14 +118,21 @@ var _ = Describe("probe_utils", func() {
 			Expect(container.Command).ShouldNot(BeEmpty())
 		})
 
-		It("should build status probe container", func() {
-			buildStatusProbeContainer("wesql", container, clusterDefProbe, probeServiceHTTPPort)
-			Expect(container.ReadinessProbe.HTTPGet).ShouldNot(BeNil())
-		})
-
-		It("should build running probe container", func() {
-			buildRunningProbeContainer("wesql", container, clusterDefProbe, probeServiceHTTPPort)
-			Expect(container.ReadinessProbe.HTTPGet).ShouldNot(BeNil())
+		It("build we-syncer container", func() {
+			reqCtx := intctrlutil.RequestCtx{
+				Ctx: ctx,
+				Log: logger,
+			}
+			// all other services are disabled
+			defaultBuiltInHandler := appsv1alpha1.MySQLBuiltinActionHandler
+			component.LifecycleActions = &appsv1alpha1.ComponentLifecycleActions{
+				MemberJoin: &appsv1alpha1.LifecycleActionHandler{
+					BuiltinHandler: &defaultBuiltInHandler,
+				},
+			}
+			Expect(buildLorryContainers(reqCtx, component)).Should(Succeed())
+			Expect(component.PodSpec.Containers).Should(HaveLen(1))
+			Expect(component.PodSpec.Containers[0].Name).Should(Equal(constant.WeSyncerContainerName))
 		})
 
 		It("build volume protection probe container without RBAC", func() {
@@ -133,8 +153,18 @@ var _ = Describe("probe_utils", func() {
 					},
 				},
 			}
+			defaultBuiltInHandler := appsv1alpha1.MySQLBuiltinActionHandler
+			component.LifecycleActions = &appsv1alpha1.ComponentLifecycleActions{
+				RoleProbe: &appsv1alpha1.RoleProbeSpec{
+					LifecycleActionHandler: appsv1alpha1.LifecycleActionHandler{
+						BuiltinHandler: &defaultBuiltInHandler,
+					},
+				},
+			}
 			Expect(buildLorryContainers(reqCtx, component)).Should(Succeed())
-			Expect(len(component.PodSpec.Containers) >= 3).Should(BeTrue())
+			Expect(component.PodSpec.Containers).Should(HaveLen(2))
+			Expect(component.PodSpec.Containers[0].Name).Should(Equal(constant.RoleProbeContainerName))
+			Expect(component.PodSpec.Containers[1].Name).Should(Equal(constant.VolumeProtectionProbeContainerName))
 		})
 
 		It("build volume protection probe container with RBAC", func() {
@@ -155,9 +185,17 @@ var _ = Describe("probe_utils", func() {
 					},
 				},
 			}
+			defaultBuiltInHandler := appsv1alpha1.MySQLBuiltinActionHandler
+			component.LifecycleActions = &appsv1alpha1.ComponentLifecycleActions{
+				RoleProbe: &appsv1alpha1.RoleProbeSpec{
+					LifecycleActionHandler: appsv1alpha1.LifecycleActionHandler{
+						BuiltinHandler: &defaultBuiltInHandler,
+					},
+				},
+			}
 			viper.SetDefault(constant.EnableRBACManager, true)
 			Expect(buildLorryContainers(reqCtx, component)).Should(Succeed())
-			Expect(len(component.PodSpec.Containers) >= 3).Should(BeTrue())
+			Expect(component.PodSpec.Containers).Should(HaveLen(2))
 			spec := &appsv1alpha1.VolumeProtectionSpec{}
 			for _, e := range component.PodSpec.Containers[0].Env {
 				if e.Name == constant.KBEnvVolumeProtectionSpec {

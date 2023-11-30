@@ -48,8 +48,9 @@ var _ = Describe("builder", func() {
 	const clusterVersionName = "test-clusterversion"
 	const clusterName = "test-cluster"
 	const mysqlCompDefName = "replicasets"
-	const mysqlCompName = "mysql"
 	const proxyCompDefName = "proxy"
+	const mysqlCompName = "mysql"
+	const mysqlCharacterType = "mysql"
 
 	allFieldsClusterDefObj := func(needCreate bool) *appsv1alpha1.ClusterDefinition {
 		By("By assure an clusterDefinition obj")
@@ -105,8 +106,8 @@ var _ = Describe("builder", func() {
 			AddAnnotationsInMap(newExtraEnvs()).
 			AddComponent(mysqlCompName, mysqlCompDefName).SetReplicas(1).
 			AddVolumeClaimTemplate(testapps.DataVolumeName, pvcSpec).
-			AddService(testapps.ServiceVPCName, corev1.ServiceTypeLoadBalancer).
-			AddService(testapps.ServiceInternetName, corev1.ServiceTypeLoadBalancer).
+			AddComponentService(testapps.ServiceVPCName, corev1.ServiceTypeLoadBalancer).
+			AddComponentService(testapps.ServiceInternetName, corev1.ServiceTypeLoadBalancer).
 			GetObject()
 		key := client.ObjectKeyFromObject(clusterObj)
 		if needCreate {
@@ -141,26 +142,19 @@ var _ = Describe("builder", func() {
 		}
 		return reqCtx
 	}
-	newAllFieldsComponent := func(clusterDef *appsv1alpha1.ClusterDefinition, clusterVersion *appsv1alpha1.ClusterVersion) *component.SynthesizedComponent {
-		cluster, clusterDef, clusterVersion, _ := newAllFieldsClusterObj(clusterDef, clusterVersion, false)
+	newAllFieldsComponent := func(clusterDef *appsv1alpha1.ClusterDefinition,
+		clusterVer *appsv1alpha1.ClusterVersion, cluster *appsv1alpha1.Cluster) *component.SynthesizedComponent {
 		reqCtx := newReqCtx()
 		By("assign every available fields")
-		component, err := component.BuildComponent(
-			reqCtx,
-			nil,
-			cluster,
-			clusterDef,
-			&clusterDef.Spec.ComponentDefs[0],
-			&cluster.Spec.ComponentSpecs[0],
-			nil,
-			&clusterVersion.Spec.ComponentVersions[0])
+		synthesizeComp, err := component.BuildSynthesizedComponentWrapper4Test(reqCtx, testCtx.Cli,
+			clusterDef, clusterVer, cluster, &cluster.Spec.ComponentSpecs[0])
 		Expect(err).Should(Succeed())
-		Expect(component).ShouldNot(BeNil())
-		return component
+		Expect(synthesizeComp).ShouldNot(BeNil())
+		return synthesizeComp
 	}
 	newClusterObjs := func(clusterDefObj *appsv1alpha1.ClusterDefinition) (*appsv1alpha1.ClusterDefinition, *appsv1alpha1.Cluster, *component.SynthesizedComponent) {
 		cluster, clusterDef, clusterVersion, _ := newAllFieldsClusterObj(clusterDefObj, nil, false)
-		synthesizedComponent := newAllFieldsComponent(clusterDef, clusterVersion)
+		synthesizedComponent := newAllFieldsComponent(clusterDef, clusterVersion, cluster)
 		return clusterDef, cluster, synthesizedComponent
 	}
 
@@ -183,18 +177,18 @@ var _ = Describe("builder", func() {
 
 		It("builds Conn. Credential correctly", func() {
 			var (
-				clusterDefObj                             = testapps.NewClusterDefFactoryWithConnCredential("conn-cred").GetObject()
+				clusterDefObj                             = testapps.NewClusterDefFactoryWithConnCredential("conn-cred", mysqlCompDefName).GetObject()
 				clusterDef, cluster, synthesizedComponent = newClusterObjs(clusterDefObj)
 			)
 			credential := BuildConnCredential(clusterDef, cluster, synthesizedComponent)
 			Expect(credential).ShouldNot(BeNil())
-			Expect(credential.Labels["apps.kubeblocks.io/cluster-type"]).Should(BeEmpty())
+			Expect(credential.Labels[constant.KBAppClusterDefTypeLabelKey]).Should(BeEmpty())
 			By("setting type")
 			characterType := "test-character-type"
 			clusterDef.Spec.Type = characterType
 			credential = BuildConnCredential(clusterDef, cluster, synthesizedComponent)
 			Expect(credential).ShouldNot(BeNil())
-			Expect(credential.Labels["apps.kubeblocks.io/cluster-type"]).Should(Equal(characterType))
+			Expect(credential.Labels[constant.KBAppClusterDefTypeLabelKey]).Should(Equal(characterType))
 			// "username":      "root",
 			// "SVC_FQDN":      "$(SVC_FQDN)",
 			// "RANDOM_PASSWD": "$(RANDOM_PASSWD)",
@@ -219,8 +213,8 @@ var _ = Describe("builder", func() {
 				Expect(credential.StringData[v]).ShouldNot(BeEquivalentTo(fmt.Sprintf("$(%s)", v)))
 			}
 			Expect(credential.StringData["RANDOM_PASSWD"]).Should(HaveLen(8))
-			svcFQDN := fmt.Sprintf("%s-%s.%s.svc", cluster.Name, synthesizedComponent.Name, cluster.Namespace)
-			headlessSvcFQDN := fmt.Sprintf("%s-%s-headless.%s.svc", cluster.Name, synthesizedComponent.Name, cluster.Namespace)
+			svcFQDN := fmt.Sprintf("%s-%s", cluster.Name, synthesizedComponent.Name)
+			headlessSvcFQDN := fmt.Sprintf("%s-%s-headless", cluster.Name, synthesizedComponent.Name)
 			var mysqlPort corev1.ServicePort
 			var paxosPort corev1.ServicePort
 			for _, s := range synthesizedComponent.Services[0].Spec.Ports {
@@ -243,7 +237,7 @@ var _ = Describe("builder", func() {
 			encryptionKey := "encryptionKey"
 			viper.Set(constant.CfgKeyDPEncryptionKey, encryptionKey)
 			var (
-				clusterDefObj                             = testapps.NewClusterDefFactoryWithConnCredential("conn-cred").GetObject()
+				clusterDefObj                             = testapps.NewClusterDefFactoryWithConnCredential("conn-cred", mysqlCompDefName).GetObject()
 				clusterDef, cluster, synthesizedComponent = newClusterObjs(clusterDefObj)
 			)
 			e := intctrlutil.NewEncryptor(encryptionKey)
@@ -255,58 +249,17 @@ var _ = Describe("builder", func() {
 			Expect(credential.StringData["RANDOM_PASSWD"]).Should(Equal(originalPassword))
 		})
 
-		It("builds StatefulSet correctly", func() {
-			reqCtx := newReqCtx()
-			_, cluster, synthesizedComponent := newClusterObjs(nil)
-			envConfigName := "test-env-config-name"
-
-			sts, err := BuildSts(reqCtx, cluster, synthesizedComponent, envConfigName)
-			Expect(err).Should(BeNil())
-			Expect(sts).ShouldNot(BeNil())
-			// test  replicas = 0
-			newComponent := *synthesizedComponent
-			newComponent.Replicas = 0
-			sts, err = BuildSts(reqCtx, cluster, &newComponent, envConfigName)
-			Expect(err).Should(BeNil())
-			Expect(sts).ShouldNot(BeNil())
-			Expect(*sts.Spec.Replicas).Should(Equal(int32(0)))
-			Expect(sts.Spec.VolumeClaimTemplates[0].Labels[constant.VolumeTypeLabelKey]).
-				Should(Equal(string(appsv1alpha1.VolumeTypeData)))
-			// test workload type replication
-			replComponent := *synthesizedComponent
-			replComponent.Replicas = 2
-			replComponent.WorkloadType = appsv1alpha1.Replication
-			sts, err = BuildSts(reqCtx, cluster, &replComponent, envConfigName)
-			Expect(err).Should(BeNil())
-			Expect(sts).ShouldNot(BeNil())
-			Expect(*sts.Spec.Replicas).Should(BeEquivalentTo(2))
-			// test extra envs
-			Expect(sts.Spec.Template.Spec.Containers).ShouldNot(BeEmpty())
-			for _, container := range sts.Spec.Template.Spec.Containers {
-				isContainEnv := false
-				for _, env := range container.Env {
-					if env.Name == "mock-key" && env.Value == "mock-value" {
-						isContainEnv = true
-						break
-					}
-				}
-				Expect(isContainEnv).Should(BeTrue())
-			}
-		})
-
 		It("builds RSM correctly", func() {
-			reqCtx := newReqCtx()
-			_, cluster, synthesizedComponent := newClusterObjs(nil)
-			envConfigName := "test-env-config-name"
+			clusterDef, cluster, synthesizedComponent := newClusterObjs(nil)
 
-			rsm, err := BuildRSM(reqCtx, cluster, synthesizedComponent, envConfigName)
+			rsm, err := BuildRSM(cluster, synthesizedComponent)
 			Expect(err).Should(BeNil())
 			Expect(rsm).ShouldNot(BeNil())
 
 			By("set replicas = 0")
 			newComponent := *synthesizedComponent
 			newComponent.Replicas = 0
-			rsm, err = BuildRSM(reqCtx, cluster, &newComponent, envConfigName)
+			rsm, err = BuildRSM(cluster, &newComponent)
 			Expect(err).Should(BeNil())
 			Expect(rsm).ShouldNot(BeNil())
 			Expect(*rsm.Spec.Replicas).Should(Equal(int32(0)))
@@ -314,10 +267,10 @@ var _ = Describe("builder", func() {
 				Should(Equal(string(appsv1alpha1.VolumeTypeData)))
 
 			By("set workload type to Replication")
-			replComponent := *synthesizedComponent
-			replComponent.Replicas = 2
-			replComponent.WorkloadType = appsv1alpha1.Replication
-			rsm, err = BuildRSM(reqCtx, cluster, &replComponent, envConfigName)
+			clusterDef.Spec.ComponentDefs[0].WorkloadType = appsv1alpha1.Replication
+			cluster.Spec.ComponentSpecs[0].Replicas = 2
+			replComponent := newAllFieldsComponent(clusterDef, nil, cluster)
+			rsm, err = BuildRSM(cluster, replComponent)
 			Expect(err).Should(BeNil())
 			Expect(rsm).ShouldNot(BeNil())
 			Expect(*rsm.Spec.Replicas).Should(BeEquivalentTo(2))
@@ -333,25 +286,6 @@ var _ = Describe("builder", func() {
 				}
 				Expect(isContainEnv).Should(BeTrue())
 			}
-
-			// test service labels
-			expectLabelsExist := func(labels map[string]string) {
-				expectedLabels := map[string]string{
-					constant.AppManagedByLabelKey:   constant.AppName,
-					constant.AppNameLabelKey:        replComponent.ClusterDefName,
-					constant.AppInstanceLabelKey:    cluster.Name,
-					constant.KBAppComponentLabelKey: replComponent.Name,
-					constant.AppComponentLabelKey:   replComponent.CompDefName,
-				}
-				Expect(labels).ShouldNot(BeNil())
-				for k, ev := range expectedLabels {
-					v, ok := labels[k]
-					Expect(ok).Should(BeTrue())
-					Expect(v).Should(Equal(ev))
-				}
-			}
-			Expect(rsm.Spec.Service).ShouldNot(BeNil())
-			expectLabelsExist(rsm.Spec.Service.Labels)
 
 			// test roles
 			Expect(rsm.Spec.Roles).Should(HaveLen(2))
@@ -369,13 +303,13 @@ var _ = Describe("builder", func() {
 			Expect(*rsm.Spec.MemberUpdateStrategy).Should(BeEquivalentTo(workloads.SerialUpdateStrategy))
 
 			By("set workload type to Consensus")
-			csComponent := *synthesizedComponent
-			csComponent.Replicas = 3
-			csComponent.WorkloadType = appsv1alpha1.Consensus
-			csComponent.CharacterType = "mysql"
-			csComponent.ConsensusSpec = appsv1alpha1.NewConsensusSetSpec()
-			csComponent.ConsensusSpec.UpdateStrategy = appsv1alpha1.BestEffortParallelStrategy
-			rsm, err = BuildRSM(reqCtx, cluster, &csComponent, envConfigName)
+			clusterDef.Spec.ComponentDefs[0].WorkloadType = appsv1alpha1.Consensus
+			clusterDef.Spec.ComponentDefs[0].CharacterType = mysqlCharacterType
+			clusterDef.Spec.ComponentDefs[0].ConsensusSpec = appsv1alpha1.NewConsensusSetSpec()
+			clusterDef.Spec.ComponentDefs[0].ConsensusSpec.UpdateStrategy = appsv1alpha1.BestEffortParallelStrategy
+			cluster.Spec.ComponentSpecs[0].Replicas = 3
+			csComponent := newAllFieldsComponent(clusterDef, nil, cluster)
+			rsm, err = BuildRSM(cluster, csComponent)
 			Expect(err).Should(BeNil())
 			Expect(rsm).ShouldNot(BeNil())
 
@@ -392,8 +326,8 @@ var _ = Describe("builder", func() {
 		})
 
 		It("builds PDB correctly", func() {
-			_, cluster, synthesizedComponent := newClusterObjs(nil)
-			pdb := BuildPDB(cluster, synthesizedComponent)
+			_, _, synthesizedComponent := newClusterObjs(nil)
+			pdb := BuildPDB(synthesizedComponent)
 			Expect(pdb).ShouldNot(BeNil())
 		})
 
@@ -425,13 +359,11 @@ var _ = Describe("builder", func() {
 
 		It("builds config manager sidecar container correctly", func() {
 			_, cluster, synthesizedComponent := newClusterObjs(nil)
-			cfg := BuildEnvConfig(cluster, synthesizedComponent)
 			sidecarRenderedParam := &cfgcm.CfgManagerBuildParams{
 				ManagerName:   "cfgmgr",
 				SecreteName:   "test-secret",
 				ComponentName: synthesizedComponent.Name,
 				CharacterType: synthesizedComponent.CharacterType,
-				EnvConfigName: cfg.Name,
 				Image:         constant.KBToolsImage,
 				Args:          []string{},
 				Envs:          []corev1.EnvVar{},
@@ -448,7 +380,7 @@ var _ = Describe("builder", func() {
 			_, cluster, synthesizedComponent := newClusterObjs(nil)
 			sidecarRenderedParam := &cfgcm.CfgManagerBuildParams{
 				ManagerName:           "cfgmgr",
-				CharacterType:         "mysql",
+				CharacterType:         mysqlCharacterType,
 				SecreteName:           "test-secret",
 				Image:                 constant.KBToolsImage,
 				ShareProcessNamespace: true,
@@ -479,7 +411,7 @@ var _ = Describe("builder", func() {
 					Tolerations: []corev1.Toleration{
 						{
 							Key:      "testKey",
-							Value:    "testVaule",
+							Value:    "testValue",
 							Operator: corev1.TolerationOpExists,
 						},
 					},
@@ -487,9 +419,10 @@ var _ = Describe("builder", func() {
 			}
 			job, err := BuildRestoreJob(cluster, component, key.Name, "", []string{"sh"}, volumes, volumeMounts, env, nil)
 			Expect(err).Should(BeNil())
-			Expect(job.Spec.Template.Spec.Tolerations[0].Key).Should(Equal("testKey"))
 			Expect(job).ShouldNot(BeNil())
 			Expect(job.Name).Should(Equal(key.Name))
+			Expect(len(job.Spec.Template.Spec.Tolerations) > 0).Should(BeTrue())
+			Expect(job.Spec.Template.Spec.Tolerations[0].Key).Should(Equal("testKey"))
 		})
 
 		It("builds volume snapshot class correctly", func() {
@@ -505,8 +438,7 @@ var _ = Describe("builder", func() {
 			_, cluster, synthesizedComponent := newClusterObjs(nil)
 			cfgManagerParams := &cfgcm.CfgManagerBuildParams{
 				ManagerName:               constant.ConfigSidecarName,
-				SecreteName:               component.GenerateConnCredential(cluster.Name),
-				EnvConfigName:             component.GenerateComponentEnvName(cluster.Name, synthesizedComponent.Name),
+				SecreteName:               constant.GenerateDefaultConnCredential(cluster.Name),
 				Image:                     viper.GetString(constant.KBToolsImage),
 				Cluster:                   cluster,
 				ConfigLazyRenderedVolumes: make(map[string]corev1.VolumeMount),
@@ -523,7 +455,7 @@ var _ = Describe("builder", func() {
 		It("builds serviceaccount correctly", func() {
 			_, cluster, _ := newClusterObjs(nil)
 			expectName := fmt.Sprintf("kb-%s", cluster.Name)
-			sa := BuildServiceAccount(cluster)
+			sa := BuildServiceAccount(cluster, expectName)
 			Expect(sa).ShouldNot(BeNil())
 			Expect(sa.Name).Should(Equal(expectName))
 		})
@@ -531,7 +463,7 @@ var _ = Describe("builder", func() {
 		It("builds rolebinding correctly", func() {
 			_, cluster, _ := newClusterObjs(nil)
 			expectName := fmt.Sprintf("kb-%s", cluster.Name)
-			rb := BuildRoleBinding(cluster)
+			rb := BuildRoleBinding(cluster, expectName)
 			Expect(rb).ShouldNot(BeNil())
 			Expect(rb.Name).Should(Equal(expectName))
 		})
@@ -539,7 +471,7 @@ var _ = Describe("builder", func() {
 		It("builds clusterrolebinding correctly", func() {
 			_, cluster, _ := newClusterObjs(nil)
 			expectName := fmt.Sprintf("kb-%s", cluster.Name)
-			crb := BuildClusterRoleBinding(cluster)
+			crb := BuildClusterRoleBinding(cluster, expectName)
 			Expect(crb).ShouldNot(BeNil())
 			Expect(crb.Name).Should(Equal(expectName))
 		})

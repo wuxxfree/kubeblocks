@@ -57,14 +57,14 @@ mysql -h%s -P%s -u%s -p%s
 func (r *Commands) ConnectCommand(connectInfo *engines.AuthInfo) []string {
 	userName := r.info.UserEnv
 	userPass := r.info.PasswordEnv
-
+	dsn := fmt.Sprintf("mysql://%s:%s@:${serverPort}", userName, userPass)
 	if connectInfo != nil {
 		userName = connectInfo.UserName
 		userPass = connectInfo.UserPasswd
+		dsn = engines.AddSingleQuote(fmt.Sprintf("mysql://%s:%s@:${serverPort}", userName, userPass))
 	}
 
-	foxlakeCmd := []string{fmt.Sprintf("%s mysql://%s:%s@:${serverPort}", r.info.Client, userName, userPass)}
-
+	foxlakeCmd := []string{fmt.Sprintf("%s %s", r.info.Client, dsn)}
 	return []string{"sh", "-c", strings.Join(foxlakeCmd, " ")}
 }
 
