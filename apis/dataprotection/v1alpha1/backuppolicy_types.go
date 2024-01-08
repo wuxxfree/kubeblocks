@@ -78,13 +78,14 @@ type PodSelector struct {
 	// are selected.
 	// Valid values are:
 	// - Any: select any one pod that match the labelsSelector.
+	// - All: select all pods that match the labelsSelector.
 	// +kubebuilder:default=Any
 	Strategy PodSelectionStrategy `json:"strategy,omitempty"`
 }
 
 // PodSelectionStrategy specifies the strategy to select when multiple pods are
 // selected for backup target
-// +kubebuilder:validation:Enum=Any
+// +kubebuilder:validation:Enum={Any,All}
 type PodSelectionStrategy string
 
 const (
@@ -175,6 +176,10 @@ type BackupMethod struct {
 	// runtimeSettings specifies runtime settings for the backup workload container.
 	// +optional
 	RuntimeSettings *RuntimeSettings `json:"runtimeSettings,omitempty"`
+
+	// target specifies the target information to back up, it will override the global target policy.
+	// +optional
+	Target *BackupTarget `json:"target,omitempty"`
 }
 
 // TargetVolumeInfo specifies the volumes and their mounts of the targeted application

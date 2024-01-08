@@ -22,6 +22,7 @@ package backup
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -32,6 +33,7 @@ import (
 	"github.com/apecloud/kubeblocks/pkg/constant"
 	"github.com/apecloud/kubeblocks/pkg/dataprotection/action"
 	"github.com/apecloud/kubeblocks/pkg/dataprotection/types"
+	dputils "github.com/apecloud/kubeblocks/pkg/dataprotection/utils"
 )
 
 func getVolumesByNames(pod *corev1.Pod, volumeNames []string) []corev1.Volume {
@@ -123,13 +125,13 @@ func excludeLabelsForWorkload() []string {
 
 // BuildBackupWorkloadLabels builds the labels for workload which owned by backup.
 func BuildBackupWorkloadLabels(backup *dpv1alpha1.Backup) map[string]string {
-	labels := backup.Labels
-	if labels == nil {
-		labels = map[string]string{}
-	} else {
-		for _, v := range excludeLabelsForWorkload() {
-			delete(labels, v)
+	labels := map[string]string{}
+	excludeLabels := excludeLabelsForWorkload()
+	for k, v := range backup.Labels {
+		if slices.Contains(excludeLabels, k) {
+			continue
 		}
+		labels[k] = v
 	}
 	labels[types.BackupNameLabelKey] = backup.Name
 	return labels
@@ -216,4 +218,20 @@ func SetExpirationByCreationTime(backup *dpv1alpha1.Backup) error {
 	}
 	backup.Status.Expiration = expiration
 	return nil
+}
+
+// BuildCronJobSchedule build cron job schedule info based on kubernetes version.
+// For kubernetes version >= 1.25, the timeZone field is supported, return timezone.
+// Ref https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/#time-zones
+//
+// For kubernetes version < 1.25 and greater than 1.21, the timeZone field is not
+// supported, so we need to set the CRON_TZ environment variable.
+// Ref https://github.com/kubernetes/kubernetes/issues/47202#issuecomment-901294870
+func BuildCronJobSchedule(cronExpression string) (*string, string) {
+	timeZone := "UTC"
+	major, minor, _ := dputils.GetKubeVersion()
+	if major >= 1 && minor >= 25 {
+		return &timeZone, cronExpression
+	}
+	return nil, fmt.Sprintf("CRON_TZ=%s %s", timeZone, cronExpression)
 }
